@@ -1,10 +1,15 @@
 # Murmur YouTube
 
-Push-to-talk dictation for macOS. Hold a key, talk, release — cleaned-up text lands in
-whatever text field has focus. A Wispr Flow-shaped app, built native and fully on-device.
+Press-to-toggle dictation for macOS, multilingual. Press a key, talk in Italian, English,
+or a mix of the two, press again — cleaned-up text lands in whatever text field has focus.
+Fully on-device: audio never leaves the machine.
+
+This is a personal fork of [per-simmons/murmur-youtube](https://github.com/per-simmons/murmur-youtube),
+trimmed to one engine, one hotkey mode, and no dictionary/comparison/Windows surface —
+see `git log upstream/main..main` for what changed.
 
 **Status:** working skeleton. Builds, launches, arms the hotkey, transcribes, injects.
-Branding and the LLM cleanup tier are the next passes.
+Voice has not been tested end to end with a human yet (see Verified below).
 
 ---
 
@@ -40,7 +45,8 @@ Then grant two permissions — neither is optional, and neither can be requested
 | **Accessibility** | System Settings ▸ Privacy & Security ▸ Accessibility | The `CGEventTap` that sees the hotkey, and the AX text insert |
 | **Microphone** | Prompted on first dictation | Audio capture |
 
-Restart Murmur YouTube after granting Accessibility. Then hold **Right ⌥** and talk.
+Restart Murmur YouTube after granting Accessibility. Then press **Right ⌥** to start
+talking, press it again to stop.
 
 ### Why grants survive rebuilds here
 
@@ -75,19 +81,19 @@ Other targets: `make app` (bundle only), `make run` (run in place), `make clean`
 ## Architecture
 
 ```
- hold key ─► HotkeyMonitor ──► DictationController ◄── Settings
-                                │
-                     ┌──────────┼──────────┐
-                     ▼          ▼          ▼
-              AudioCapture  HUDPanel   TranscriptionEngine
-                     │                      │
-                (AudioChunk) ──ordered──► AppleSpeechEngine
-                                            │
-                                       (transcript)
-                                            ▼
-                                      TextFormatter
-                                            ▼
-                                      TextInjector ─► focused app
+ press key ─► HotkeyMonitor ──► DictationController ◄── Settings
+                                 │
+                      ┌──────────┼──────────┐
+                      ▼          ▼          ▼
+               AudioCapture  HUDPanel   TranscriptionEngine
+                      │                      │
+                 (AudioChunk) ──ordered──► WhisperKitEngine
+                                             │
+                                        (transcript)
+                                             ▼
+                                       TextFormatter
+                                             ▼
+                                       TextInjector ─► focused app
 ```
 
 ### Decisions worth knowing
@@ -119,83 +125,64 @@ two components most likely to change can change without touching anything else.
 Sources/MurmurYouTube/
 ├── MurmurYouTubeApp.swift              @main, AppDelegate, MenuBarExtra
 ├── Core/
-│   ├── DictationController.swift   state machine, wires everything
+│   ├── DictationController.swift   state machine, wires everything, toggle logic
 │   ├── HotkeyMonitor.swift         CGEventTap on .flagsChanged
 │   ├── AudioCapture.swift          AVAudioEngine tap + format conversion + RMS
 │   └── TextInjector.swift          AX insert, pasteboard+⌘V fallback
 ├── Transcription/
 │   ├── TranscriptionEngine.swift   protocol + AudioChunk
-│   └── AppleSpeechEngine.swift     SpeechAnalyzer / SpeechTranscriber
+│   └── WhisperKitEngine.swift      Whisper large-v3-turbo, auto language detection
 ├── Formatting/
 │   └── TextFormatter.swift         protocol + RuleBasedFormatter
 ├── UI/
+│   ├── MainWindow.swift            transcription history
 │   ├── HUDPanel.swift              non-activating floating panel
 │   └── HUDView.swift               waveform + live transcript, Brand palette
 └── Support/
-    ├── Settings.swift, Permissions.swift, Log.swift
+    ├── Settings.swift, Permissions.swift, Log.swift, RunLog.swift
 ```
 
 ---
 
 ## Speech engine
 
-Default is Apple's **`SpeechAnalyzer` / `SpeechTranscriber`**, new in macOS 26: no
-dependency, no bundled model, no cloud path, real streaming with `.volatileResults` so
-text appears while you're still talking. The OS downloads and manages model assets, so the
-first run for a locale may pause on `AssetInstallationRequest`.
+**WhisperKit** (Argmax, CoreML/ANE) running **Whisper large-v3-turbo** — multilingual,
+with automatic per-utterance language detection, so one hotkey covers Italian, English, or
+a mix with a dominant language, no manual language switch. The model (~800 MB) downloads
+once on first use and everything after that is local.
 
-The intended upgrade is **Parakeet v3** via FluidAudio (CoreML on the Neural Engine) —
-measurably better English WER, ~110× realtime, ~66 MB resident. Implementing
-`TranscriptionEngine` is the entire cost of switching; `DictationController` doesn't
-change.
-
-| | Apple SpeechTranscriber | Parakeet v3 (FluidAudio) | Whisper large-v3 (WhisperKit) |
-|---|---|---|---|
-| Dependency | none | SwiftPM | SwiftPM |
-| Model download | OS-managed | ~600 MB | ~1.5 GB |
-| English accuracy | good | best | good |
-| Languages | many | 25 | 99 |
-| Latency | low | ~80 ms | 200–500 ms |
+Whisper resolves on release rather than streaming live text: `WhisperKitEngine` buffers
+the utterance and transcribes once in `finish()`, since language detection needs to see
+the whole clip. A single push-to-talk period that switches language mid-sentence can come
+out imprecise — the detector picks one language for the whole clip.
 
 ---
 
 ## Not built yet
 
 1. **LLM cleanup tier.** `RuleBasedFormatter` strips fillers, fixes spacing, capitalizes
-   sentences and adds terminal punctuation — genuinely useful, entirely deterministic. The
-   real win is a second `TextFormatter` backed by Apple's on-device Foundation Models
-   (macOS 26) for tone, list formatting, and honoring spoken corrections, with Claude as an
-   optional higher-quality tier.
-2. **Command Mode.** Select text, hold a second hotkey, say "make this more formal."
-   Needs AX read of `kAXSelectedTextAttribute` plus an LLM round-trip.
-3. **Personal dictionary.** Names and jargon the ASR keeps missing. `SpeechAnalyzer`
-   supports this through `AnalysisContext` / `SFCustomLanguageModelData`.
-4. **Branding.** `Brand` in `HUDView.swift` is a two-color placeholder gradient. App icon,
+   sentences and adds terminal punctuation — genuinely useful, entirely deterministic, and
+   language-agnostic enough to not need per-locale rules yet. An LLM-backed tier (Apple
+   Foundation Models, or Claude) would be the next step if this stops being enough.
+2. **Personal dictionary.** Names and jargon the ASR keeps missing. Cut in this fork along
+   with the comparison/dashboard tooling it depended on — add back if recognition errors
+   turn out to be recurring in practice rather than one-off.
+3. **Branding.** `Brand` in `HUDView.swift` is a two-color placeholder gradient. App icon,
    real palette, HUD motion design, onboarding.
-5. **Onboarding.** A first-run window that walks through both permissions instead of
-   relying on the menu's "Grant…" items.
-6. **Developer ID signing + notarization.** Ends the TCC-reset churn and makes the app
-   distributable.
+4. **Developer ID signing + notarization.** Ends the TCC-reset churn and makes the app
+   distributable (not a goal for this fork — personal use only).
 
 ---
 
 ## Verified
 
-Driven with a synthetic Right ⌥ hold (`scratchpad/ptt/ptt2.swift` posts `flagsChanged`
-events) and confirmed via `/usr/bin/log show --predicate 'subsystem ==
-"ai.pivotstudio.murmur-youtube"'`:
+- `swift build` and `make app` both complete clean under Swift 6 strict concurrency,
+  including the new `WhisperKit` dependency.
+- Signs (ad-hoc or Developer ID) and assembles into a real `.app` bundle.
 
-- Builds clean under Swift 6 strict concurrency.
-- Signs with Developer ID; grants survive rebuild + reinstall.
-- Launches as an accessory app, no Dock icon, menu bar item present.
-- Event tap arms on grant without a restart (the poller catches it).
-- Full state machine: `starting → listening → finishing → idle`, no errors.
-- `SpeechAnalyzer` starts; models already installed, no download stall.
-- Audio capture runs and converts native 48 kHz → 16 kHz for the engine.
-- HUD renders bottom-center at `{{790, 96}, {340, 76}}` without taking focus.
-- Silence produces an empty transcript and injects nothing.
-
-**Not yet verified:** speech → transcript → cleanup → injection. Synthetic key events
-can't produce audio, so this needs a human to hold the key and talk.
-
-> `log` is shadowed in this shell — use `/usr/bin/log` explicitly or it returns nothing.
+**Not yet verified:** the actual dictation path — press key, talk, press again, get text.
+That needs a human with a microphone, Accessibility + Microphone permissions granted, and
+the WhisperKit model downloaded on first use. Also unverified: whether Whisper's
+per-utterance language detection is good enough in practice for Italian/English mixed
+speech, and whether `RuleBasedFormatter`'s cleanup rules hold up on Italian output (see
+"Not built yet" above).
