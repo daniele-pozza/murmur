@@ -251,7 +251,7 @@ final class DictationController {
         RunLog.record(
             DictationRun(
                 date: releasedAt,
-                engine: "Whisper",
+                engine: "Nemotron",
                 audioSeconds: releasedAt.timeIntervalSince(holdStarted),
                 processSeconds: Date().timeIntervalSince(releasedAt),
                 text: text
