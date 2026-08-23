@@ -21,9 +21,12 @@ struct HUDView: View {
     var body: some View {
         HStack(spacing: 10) {
             Waveform(level: controller.level, isActive: controller.state == .listening)
-                .frame(width: 38, height: 16)
+                .frame(width: 19, height: 16)
+                // Centered in its own third of the pill's content width (180pt / 3 = 60pt),
+                // not stretched to fill it.
+                .frame(width: 60)
                 // Fixed-size sibling in a tight HStack — without priority, a long
-                // unbreakable run of text can still squeeze this narrower than 38pt.
+                // unbreakable run of text can still squeeze this narrower than its frame.
                 .layoutPriority(1)
 
             Text(label)
