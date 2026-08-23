@@ -22,6 +22,9 @@ struct HUDView: View {
         HStack(spacing: 10) {
             Waveform(level: controller.level, isActive: controller.state == .listening)
                 .frame(width: 38, height: 16)
+                // Fixed-size sibling in a tight HStack — without priority, a long
+                // unbreakable run of text can still squeeze this narrower than 38pt.
+                .layoutPriority(1)
 
             Text(label)
                 .font(.system(size: 10, weight: .medium, design: .rounded))
