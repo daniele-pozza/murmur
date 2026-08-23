@@ -20,6 +20,11 @@ actor WhisperKitEngine: TranscriptionEngine {
     /// `large-v3-v20240930_turbo` — Argmax's recommendation for max speed+accuracy on macOS.
     private static let modelName = "large-v3-v20240930_turbo"
 
+    /// Flipped once, from the cache actor, after the model finishes loading. Read from the
+    /// main actor to decide whether the HUD should say "downloading" — a stale read for one
+    /// frame is harmless, so a plain flag beats plumbing this through an async round trip.
+    nonisolated(unsafe) static var isModelReady = false
+
     private var samples: [Float] = []
     private var continuation: AsyncThrowingStream<TranscriptionChunk, Error>.Continuation?
 
@@ -78,6 +83,10 @@ private actor WhisperKitModelCache {
     static let shared = WhisperKitModelCache()
 
     private var pipe: WhisperKit?
+    /// The in-flight load, if any — a second `start()` while the first is still
+    /// downloading/compiling awaits this instead of kicking off its own `WhisperKit(...)`,
+    /// which would otherwise race a second download of the same multi-gigabyte model.
+    private var loadTask: Task<WhisperKit, Error>?
 
     func ensureLoaded(model: String) async throws {
         _ = try await loaded(model: model)
@@ -92,10 +101,20 @@ private actor WhisperKitModelCache {
 
     private func loaded(model: String) async throws -> WhisperKit {
         if let pipe { return pipe }
-        Log.speech.info("loading WhisperKit model \(model, privacy: .public)…")
-        let new = try await WhisperKit(WhisperKitConfig(model: model))
+        if let loadTask { return try await loadTask.value }
+
+        let task = Task<WhisperKit, Error> {
+            Log.speech.info("loading WhisperKit model \(model, privacy: .public)…")
+            let new = try await WhisperKit(WhisperKitConfig(model: model))
+            Log.speech.info("WhisperKit model ready")
+            return new
+        }
+        loadTask = task
+        defer { loadTask = nil }
+
+        let new = try await task.value
         pipe = new
-        Log.speech.info("WhisperKit model ready")
+        WhisperKitEngine.isModelReady = true
         return new
     }
 }

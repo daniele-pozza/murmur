@@ -52,7 +52,7 @@ struct HUDView: View {
 
     private var label: String {
         switch controller.state {
-        case .starting: "Listening…"
+        case .starting: controller.transcript.isEmpty ? "Listening…" : controller.transcript
         case .listening: controller.transcript.isEmpty ? "Listening…" : controller.transcript
         // Parakeet transcribes in one pass on release, so there's nothing to show until
         // it lands — say what's happening instead of leaving an empty pill.

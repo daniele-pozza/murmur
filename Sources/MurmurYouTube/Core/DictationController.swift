@@ -99,7 +99,7 @@ final class DictationController {
     private func beginDictation() {
         guard case .idle = state else { return }
         state = .starting
-        transcript = ""
+        transcript = WhisperKitEngine.isModelReady ? "" : "Downloading speech model (first run only)…"
         holdStarted = Date()
 
         Task { @MainActor in
