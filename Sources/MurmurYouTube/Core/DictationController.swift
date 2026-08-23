@@ -43,7 +43,7 @@ final class DictationController {
 
     init(
         formatter: any TextFormatter = RuleBasedFormatter(),
-        makeEngine: @escaping @Sendable () -> any TranscriptionEngine = { WhisperKitEngine() }
+        makeEngine: @escaping @Sendable () -> any TranscriptionEngine = { NemotronEngine() }
     ) {
         self.formatter = formatter
         self.makeEngine = makeEngine
@@ -99,7 +99,7 @@ final class DictationController {
     private func beginDictation() {
         guard case .idle = state else { return }
         state = .starting
-        transcript = WhisperKitEngine.isModelReady ? "" : "Downloading speech model (first run only)…"
+        transcript = NemotronEngine.isModelReady ? "" : "Loading speech model…"
         holdStarted = Date()
 
         Task { @MainActor in
@@ -168,7 +168,7 @@ final class DictationController {
     private func endDictation() {
         // `.finishing` is "active", so without this a second press during processing would
         // run the whole tail again — re-reading `transcript` before the first pass cleared
-        // it and pasting the same utterance twice. Whisper transcribes inside `finish()`,
+        // it and pasting the same utterance twice. The engine finalizes inside `finish()`,
         // so the window is wide.
         guard state.isActive, state != .finishing else { return }
         state = .finishing

@@ -87,7 +87,7 @@ Other targets: `make app` (bundle only), `make run` (run in place), `make clean`
                       ▼          ▼          ▼
                AudioCapture  HUDPanel   TranscriptionEngine
                       │                      │
-                 (AudioChunk) ──ordered──► WhisperKitEngine
+                 (AudioChunk) ──ordered──► NemotronEngine
                                              │
                                         (transcript)
                                              ▼
@@ -131,7 +131,7 @@ Sources/MurmurYouTube/
 │   └── TextInjector.swift          AX insert, pasteboard+⌘V fallback
 ├── Transcription/
 │   ├── TranscriptionEngine.swift   protocol + AudioChunk
-│   └── WhisperKitEngine.swift      Whisper large-v3-turbo, auto language detection
+│   └── NemotronEngine.swift        Nemotron 3.5 ASR streaming, auto language detection
 ├── Formatting/
 │   └── TextFormatter.swift         protocol + RuleBasedFormatter
 ├── UI/
@@ -146,15 +146,29 @@ Sources/MurmurYouTube/
 
 ## Speech engine
 
-**WhisperKit** (Argmax, CoreML/ANE) running **Whisper large-v3-turbo** — multilingual,
-with automatic per-utterance language detection, so one hotkey covers Italian, English, or
-a mix with a dominant language, no manual language switch. The model (~800 MB) downloads
-once on first use and everything after that is local.
+**Nemotron 3.5 ASR streaming (0.6B, GGUF)** via
+[transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) on ggml/Metal —
+multilingual (~30 languages including Italian and English) with automatic per-utterance
+language detection, so one hotkey covers Italian, English, or a mix with a dominant
+language, no manual language switch.
 
-Whisper resolves on release rather than streaming live text: `WhisperKitEngine` buffers
-the utterance and transcribes once in `finish()`, since language detection needs to see
-the whole clip. A single push-to-talk period that switches language mid-sentence can come
-out imprecise — the detector picks one language for the whole clip.
+The native library is consumed as transcribe.cpp's prebuilt `TranscribeCpp.xcframework`
+release asset (a SwiftPM `binaryTarget`, see `Package.swift`); its thin Swift wrapper is
+vendored under `Sources/TranscribeCpp/` (MIT, no published SwiftPM mirror exists yet — see
+that folder's `LICENSE`). No CMake build step needed.
+
+Unlike the CoreML/ANE path this replaced, there's no ahead-of-time compile: the model
+loads from its GGUF weights in about a second. Streaming is real, too —
+`NemotronEngine.feed()` yields committed/tentative text as audio arrives (via
+`transcribe.cpp`'s stream API), so the HUD updates live instead of only at release.
+
+**The model file itself isn't bundled or downloaded by this app.** It expects the GGUF
+already sitting in the shared Hugging Face cache at
+`~/.cache/huggingface/hub/models--handy-computer--nemotron-3.5-asr-streaming-0.6b-gguf/`
+— the same path the [Handy](https://github.com/cjpais/Handy) dictation app populates on
+its first run. Install Handy once (even if you don't keep using it) to get the weights;
+this app never talks to Handy itself, it only reads that cache path. `NemotronEngine`
+fails with a clear error at dictation start if the file isn't there.
 
 ---
 
@@ -177,12 +191,12 @@ out imprecise — the detector picks one language for the whole clip.
 ## Verified
 
 - `swift build` and `make app` both complete clean under Swift 6 strict concurrency,
-  including the new `WhisperKit` dependency.
+  including the `TranscribeCpp` binary target and its vendored Swift wrapper.
 - Signs (ad-hoc or Developer ID) and assembles into a real `.app` bundle.
 
 **Not yet verified:** the actual dictation path — press key, talk, press again, get text.
 That needs a human with a microphone, Accessibility + Microphone permissions granted, and
-the WhisperKit model downloaded on first use. Also unverified: whether Whisper's
-per-utterance language detection is good enough in practice for Italian/English mixed
-speech, and whether `RuleBasedFormatter`'s cleanup rules hold up on Italian output (see
-"Not built yet" above).
+the Nemotron GGUF present in the shared Hugging Face cache (see "Speech engine" above).
+Also unverified: whether Nemotron's per-utterance language detection is good enough in
+practice for Italian/English mixed speech, and whether `RuleBasedFormatter`'s cleanup
+rules hold up on Italian output (see "Not built yet" above).

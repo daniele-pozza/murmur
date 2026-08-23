@@ -23,7 +23,7 @@ struct TranscriptionChunk: Sendable {
 
 /// The seam that keeps Murmur YouTube engine-agnostic.
 ///
-/// The only implementation is `WhisperKitEngine` (Whisper large-v3-turbo, multilingual
+/// The only implementation is `NemotronEngine` (Nemotron 3.5 ASR streaming, multilingual
 /// with automatic language detection per utterance).
 protocol TranscriptionEngine: Actor {
     /// Audio format the engine wants buffers delivered in. `AudioCapture` converts to it.
