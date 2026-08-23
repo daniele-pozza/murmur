@@ -23,9 +23,8 @@ struct TranscriptionChunk: Sendable {
 
 /// The seam that keeps Murmur YouTube engine-agnostic.
 ///
-/// Apple's `SpeechAnalyzer` ships with macOS 26 and needs no model download, so it is
-/// the default. Parakeet (FluidAudio, CoreML/ANE) scores better on English and is the
-/// intended upgrade — implementing this protocol is the whole cost of switching.
+/// The only implementation is `WhisperKitEngine` (Whisper large-v3-turbo, multilingual
+/// with automatic language detection per utterance).
 protocol TranscriptionEngine: Actor {
     /// Audio format the engine wants buffers delivered in. `AudioCapture` converts to it.
     func preferredInputFormat() async -> AVAudioFormat?

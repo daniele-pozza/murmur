@@ -1,25 +1,12 @@
-import MurmurDictionary
 import AppKit
 import SwiftUI
 
 /// The app's main window — the front panel of the unit.
 ///
 /// Laid out the way a deck is: transport and meter across the top on the panel itself, then
-/// a recessed well below holding whichever section is selected. The section selector is a
-/// row of keys, not a segmented control, because everything else here is a physical control
-/// and one piece of stock UI would give the whole thing away.
+/// a recessed well below holding the transcription history.
 struct MainWindow: View {
     @Bindable var controller: DictationController
-
-    @State private var section: Section = .transcriptions
-
-    enum Section: String, CaseIterable, Identifiable {
-        case transcriptions
-        case dictionary
-
-        var id: String { rawValue }
-        var title: String { self == .transcriptions ? "Transcriptions" : "Dictionary" }
-    }
 
     var body: some View {
         ZStack {
@@ -28,44 +15,15 @@ struct MainWindow: View {
             VStack(spacing: DS.Space.base) {
                 TransportPanel(controller: controller)
 
-                sectionKeys
-
                 Well {
-                    Group {
-                        switch section {
-                        case .transcriptions: TranscriptionList()
-                        case .dictionary: DictionaryPanel()
-                        }
-                    }
-                    .padding(DS.Space.hair)
+                    TranscriptionList()
+                        .padding(DS.Space.hair)
                 }
                 .frame(maxHeight: .infinity)
             }
             .padding(DS.Space.roomy)
         }
         .frame(minWidth: 720, minHeight: 520)
-    }
-
-    private var sectionKeys: some View {
-        HStack(spacing: DS.Space.snug) {
-            ForEach(Section.allCases) { candidate in
-                TransportKey(
-                    title: candidate.title,
-                    isEngaged: section == candidate,
-                    engagedColor: DS.Color.ink
-                ) {
-                    withAnimation(DS.Motion.panel) { section = candidate }
-                }
-                .background {
-                    if section == candidate {
-                        RoundedRectangle(cornerRadius: DS.Radius.control)
-                            .fill(DS.Color.selection)
-                    }
-                }
-            }
-            Spacer()
-            Vents(count: 8)
-        }
     }
 }
 
@@ -250,10 +208,6 @@ private struct TranscriptionRow: View {
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
-
-            if let corrections = run.corrections, !corrections.isEmpty {
-                CorrectionBadges(corrections: corrections)
-            }
         }
         .padding(DS.Space.base)
         .background {
@@ -304,42 +258,6 @@ private struct TranscriptionRow: View {
         }
         .buttonStyle(.plain)
         .help("Delete this transcription")
-    }
-}
-
-/// Shows that the dictionary fired, and on what. Without this the dictionary is invisible
-/// and you can't tell a rule that works from one that never matches.
-private struct CorrectionBadges: View {
-    let corrections: [AppliedCorrection]
-
-    var body: some View {
-        HStack(spacing: DS.Space.snug) {
-            Silkscreen(text: "Corrected", color: DS.Color.meterAmber)
-            ForEach(corrections, id: \.self) { correction in
-                HStack(spacing: DS.Space.tight) {
-                    Text(correction.from)
-                        .strikethrough()
-                        .foregroundStyle(DS.Color.inkOnDeck.opacity(0.5))
-                    Image(systemName: "arrow.right")
-                        .font(.system(size: 7, weight: .bold))
-                        .foregroundStyle(DS.Color.inkOnDeck.opacity(0.4))
-                    Text(correction.to)
-                        .foregroundStyle(DS.Color.inkOnDeck)
-                    if correction.count > 1 {
-                        Text("×\(correction.count)")
-                            .foregroundStyle(DS.Color.inkOnDeck.opacity(0.5))
-                    }
-                }
-                .font(DS.Font.caption)
-                .padding(.horizontal, DS.Space.snug)
-                .padding(.vertical, DS.Space.hair)
-                .overlay(
-                    RoundedRectangle(cornerRadius: DS.Radius.chip)
-                        .strokeBorder(DS.Color.meterAmber.opacity(0.35), lineWidth: DS.Border.hairline)
-                )
-            }
-            Spacer()
-        }
     }
 }
 

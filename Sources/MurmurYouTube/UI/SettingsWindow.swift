@@ -30,31 +30,8 @@ struct SettingsWindow: View {
                             }
                         }
                     }
-                    note("Hold this key anywhere to dictate. The window's Record button works "
-                        + "regardless of what's focused.")
-                }
-
-                panel(label: "Model") {
-                    HStack(spacing: DS.Space.snug) {
-                        ForEach(SpeechEngineChoice.allCases, id: \.self) { choice in
-                            TransportKey(
-                                title: choice == .apple ? "Apple" : "Parakeet",
-                                isEngaged: settings.engine == choice,
-                                engagedColor: DS.Color.ink
-                            ) {
-                                settings.engine = choice
-                            }
-                            .background {
-                                if settings.engine == choice {
-                                    RoundedRectangle(cornerRadius: DS.Radius.control)
-                                        .fill(DS.Color.selection)
-                                }
-                            }
-                        }
-                    }
-                    note(settings.engine == .apple
-                        ? "Apple's on-device transcriber. Streams text while you speak; no download."
-                        : "Parakeet on the Neural Engine. Resolves on release; ~470 MB model.")
+                    note("Press this key to start dictating, press it again to stop. The "
+                        + "window's Record button works regardless of what's focused.")
                 }
 
                 panel(label: "Cleanup") {
@@ -62,8 +39,7 @@ struct SettingsWindow: View {
                         Silkscreen(text: "Clean up transcripts")
                     }
                     .toggleStyle(.switch)
-                    note("Strips fillers, fixes spacing and punctuation. The dictionary's "
-                        + "corrections run either way.")
+                    note("Strips fillers, fixes spacing and punctuation.")
                 }
 
                 Spacer()
