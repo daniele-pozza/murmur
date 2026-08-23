@@ -52,6 +52,11 @@ app: build
 	@rm -rf "$(BUNDLE)"
 	@mkdir -p "$(CONTENTS)/MacOS" "$(CONTENTS)/Resources"
 	@cp $(BUILD) "$(CONTENTS)/MacOS/$(EXEC)"
+	@# transcribe.cpp's CTranscribe.xcframework ships as a dynamic framework, and the
+	@# executable's LC_RPATH is @loader_path (SwiftPM's own build-dir layout) — so it
+	@# has to live next to the binary in Contents/MacOS, not the conventional
+	@# Contents/Frameworks, or dyld fails to find it at launch.
+	@cp -R "$(SCRATCH)/$(CONFIG)/CTranscribe.framework" "$(CONTENTS)/MacOS/CTranscribe.framework"
 	@cp Resources/Info.plist "$(CONTENTS)/Info.plist"
 	@if [ -f Resources/AppIcon.icns ]; then cp Resources/AppIcon.icns "$(CONTENTS)/Resources/"; fi
 	@printf 'APPL????' > "$(CONTENTS)/PkgInfo"

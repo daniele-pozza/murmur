@@ -8,5 +8,13 @@
 	<true/>
 	<key>com.apple.security.automation.apple-events</key>
 	<true/>
+	<!-- CTranscribe.framework (transcribe.cpp) ships pre-signed ad-hoc by its own build,
+	     independently of ours. Hardened runtime's library validation rejects loading a
+	     dylib whose signing identity doesn't match the main executable's — true even
+	     ad-hoc vs ad-hoc, since neither carries a Team ID to match against. Without a
+	     shared Developer ID to re-sign everything under, disabling validation is the
+	     only way to load it; see Makefile's SIGN_ID fallback for the same tradeoff. -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
 </dict>
 </plist>
