@@ -88,7 +88,11 @@ struct RuleBasedFormatter: TextFormatter {
     }
 
     private func ensureTerminalPunctuation(in text: String) -> String {
-        guard let last = text.last, last.isLetter || last.isNumber else { return text }
+        // Apostrophe counts as word-ending too — Italian truncated forms like "po'", "va'",
+        // "di'" are common and would otherwise be left without a terminal period.
+        guard let last = text.last, last.isLetter || last.isNumber || last == "'" || last == "’" else {
+            return text
+        }
         return text + "."
     }
 }
