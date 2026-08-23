@@ -66,6 +66,7 @@ actor NemotronEngine: TranscriptionEngine {
             continuation?.finish()
             continuation = nil
             stream = nil
+            Task { await NemotronModelCache.shared.scheduleIdleUnload() }
         }
         guard let stream else { return }
         do {
@@ -84,10 +85,19 @@ actor NemotronEngine: TranscriptionEngine {
 private actor NemotronModelCache {
     static let shared = NemotronModelCache()
 
+    /// The loaded model sits at ~800MB resident, which is a lot to hold forever on an
+    /// 8GB Mac. Trade a ~1s reload for giving that back once nothing's dictated for a
+    /// while. ponytail: fixed timeout, no settings UI — revisit if 5 minutes feels wrong.
+    private static let idleUnloadDelay: Duration = .seconds(300)
+
     private var loaded: Model?
     private var loadTask: Task<Model, Error>?
+    private var idleUnloadTask: Task<Void, Never>?
 
     func model(path: String) async throws -> Model {
+        idleUnloadTask?.cancel()
+        idleUnloadTask = nil
+
         if let loaded { return loaded }
         if let loadTask { return try await loadTask.value }
 
@@ -104,5 +114,18 @@ private actor NemotronModelCache {
         let model = try await task.value
         loaded = model
         return model
+    }
+
+    /// Called after every dictation. Frees the model if the idle window elapses without
+    /// another `model(path:)` call cancelling this task first.
+    func scheduleIdleUnload() {
+        idleUnloadTask?.cancel()
+        idleUnloadTask = Task {
+            try? await Task.sleep(for: Self.idleUnloadDelay)
+            guard !Task.isCancelled else { return }
+            loaded = nil
+            NemotronEngine.isModelReady = false
+            Log.speech.info("Nemotron model idle — released")
+        }
     }
 }

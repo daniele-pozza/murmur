@@ -19,26 +19,26 @@ struct HUDView: View {
     @Bindable var controller: DictationController
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 10) {
             Waveform(level: controller.level, isActive: controller.state == .listening)
-                .frame(width: 76, height: 26)
+                .frame(width: 38, height: 16)
 
             Text(label)
-                .font(.system(size: 13, weight: .medium, design: .rounded))
+                .font(.system(size: 10, weight: .medium, design: .rounded))
                 .foregroundStyle(isError ? Color.red.opacity(0.9) : .primary.opacity(0.85))
                 .lineLimit(2)
                 .truncationMode(.head)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .animation(.easeOut(duration: 0.12), value: controller.transcript)
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
-        .frame(width: 340, height: 76)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .frame(width: 200, height: 42)
         .background {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(.ultraThinMaterial)
                 .overlay {
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .strokeBorder(.white.opacity(0.12), lineWidth: 1)
                 }
                 .shadow(color: .black.opacity(0.28), radius: 18, y: 8)

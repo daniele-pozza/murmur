@@ -39,10 +39,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var stateObservation: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // A regular app now: dock icon, app menu, standard windows. The HUD is still a
-        // non-activating panel, so dictating into another app never steals its focus — that
-        // property belongs to the panel, not to the activation policy.
-        NSApp.setActivationPolicy(.regular)
+        // Menu-bar-only, like Handy: no Dock icon or Cmd-Tab entry. The main window still
+        // opens (from the menu bar item) when you actually want it. The HUD is a
+        // non-activating panel regardless, so dictating into another app never steals focus.
+        NSApp.setActivationPolicy(.accessory)
 
         hud = HUDPanel(controller: controller)
 

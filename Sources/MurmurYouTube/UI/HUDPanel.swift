@@ -10,7 +10,7 @@ import SwiftUI
 final class HUDPanel: NSPanel {
     init(controller: DictationController) {
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 340, height: 76),
+            contentRect: NSRect(x: 0, y: 0, width: 200, height: 42),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -48,7 +48,7 @@ final class HUDPanel: NSPanel {
         setFrameOrigin(
             NSPoint(
                 x: visible.midX - size.width / 2,
-                y: visible.minY + 96
+                y: visible.minY + 40
             )
         )
     }
