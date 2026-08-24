@@ -3,15 +3,17 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>Murmur YouTube</string>
+	<string>Murmur</string>
 	<key>CFBundleDisplayName</key>
-	<string>Murmur YouTube</string>
-	<!-- Deliberately space-free and distinct from the existing app's `murmur`, so that
-	     `pkill`/`killall` on either app can never match the other. -->
+	<string>Murmur</string>
+	<!-- Display name only is "Murmur". The executable deliberately is NOT: it stays
+	     space-free and distinct so `pkill -x`/`killall` can never match another
+	     dictation app's `murmur` binary if one is ever installed alongside. -->
 	<key>CFBundleExecutable</key>
 	<string>MurmurYouTube</string>
-	<!-- Separate from the existing Murmur's com.murmur.client: distinct TCC identity,
-	     distinct preferences domain, no shared state of any kind. -->
+	<!-- Never rename this. TCC keys the Accessibility and Microphone grants to the
+	     bundle ID, so changing it silently revokes both and re-prompts from scratch.
+	     Also keeps a distinct preferences domain from any com.murmur.client. -->
 	<key>CFBundleIdentifier</key>
 	<string>ai.pivotstudio.murmur-youtube</string>
 	<key>CFBundlePackageType</key>
@@ -31,6 +33,6 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Murmur YouTube listens while dictation is active so it can turn your speech into text.</string>
+	<string>Murmur listens while dictation is active so it can turn your speech into text.</string>
 </dict>
 </plist>

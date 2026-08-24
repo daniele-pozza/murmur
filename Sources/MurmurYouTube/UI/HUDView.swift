@@ -58,10 +58,14 @@ struct HUDView: View {
 
     private var label: String {
         switch controller.state {
-        case .starting: controller.transcript.isEmpty ? "Listening…" : controller.transcript
+        // `.starting` spans the mic-permission check and the model load, and capture
+        // hasn't begun yet — so this is the honest place for "loading", and it clears
+        // itself the moment the state advances. Usually a ~0.7s flash off a warm model;
+        // the ~25s cold load after a reboot is the case it's actually there for.
+        case .starting: "Loading speech model…"
         case .listening: controller.transcript.isEmpty ? "Listening…" : controller.transcript
-        // Parakeet transcribes in one pass on release, so there's nothing to show until
-        // it lands — say what's happening instead of leaving an empty pill.
+        // Nothing more streams in after the final chunk lands, so say what's happening
+        // rather than leaving an empty pill while the formatter runs.
         case .finishing: controller.transcript.isEmpty ? "Transcribing…" : controller.transcript
         case .error(let message): message
         case .idle: ""

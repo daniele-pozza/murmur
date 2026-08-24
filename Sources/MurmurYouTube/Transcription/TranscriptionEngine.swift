@@ -21,7 +21,7 @@ struct TranscriptionChunk: Sendable {
     let isFinal: Bool
 }
 
-/// The seam that keeps Murmur YouTube engine-agnostic.
+/// The seam that keeps Murmur engine-agnostic.
 ///
 /// The only implementation is `NemotronEngine` (Nemotron 3.5 ASR streaming, multilingual
 /// with automatic language detection per utterance).
@@ -37,6 +37,12 @@ protocol TranscriptionEngine: Actor {
 
     /// Close the session and flush any pending final results.
     func finish() async
+
+    /// Release any cached resources (e.g. a loaded model) right away, rather than on
+    /// `finish()`'s idle timer. Called once, at app quit — the model must be gone
+    /// *before* the process calls `exit()`, or ggml's own atexit cleanup can crash
+    /// trying to free a Metal device that's still resident.
+    func shutdown() async
 }
 
 enum TranscriptionError: LocalizedError {

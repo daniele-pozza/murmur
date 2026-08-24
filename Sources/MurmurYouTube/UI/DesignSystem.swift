@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The design system for Murmur YouTube.
+/// The design system for Murmur.
 ///
 /// Direction: 1980s portable field recorders and cassette decks — Sony TC-D5, Marantz PMD,
 /// Nakamichi, Braun. Equipment, not theme. Every value a view needs lives here; components
@@ -270,14 +270,6 @@ enum DS {
         static let panel = Animation.easeInOut(duration: 0.18)
         /// The record lamp coming on — instant, like a filament.
         static let lamp = Animation.easeOut(duration: 0.08)
-
-        /// VU ballistics. A real VU meter reaches 99% of a step in ~300ms and overshoots
-        /// slightly; that lag *is* the instrument's character, so the needle is damped
-        /// rather than tracking the signal directly.
-        static let needleAttack: TimeInterval = 0.30
-        static let needleRelease: TimeInterval = 0.42
-        /// Peak overshoot as a fraction of the step, before settling.
-        static let needleOvershoot: Double = 0.06
     }
 }
 

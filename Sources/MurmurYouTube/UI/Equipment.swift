@@ -251,28 +251,25 @@ struct TransportKey: View {
 /// takes ~300ms to reach a step and overshoots slightly before settling, and that lag is the
 /// instrument's character. Tracking the level exactly would produce a twitching line that
 /// reads as a progress bar with a stick on it.
+///
+/// The damping lives in the controller — `DictationController.updateLevel` low-passes the
+/// raw signal toward the target — so this view draws `level` as-is and holds nothing.
+///
+/// Deliberately *not* a `TimelineView`. A `Canvas` built inside a TimelineView content
+/// closure trips a main-actor executor check on every scheduled tick, and when a tick lands
+/// inside a CA transaction flush the check runs with no Swift task context, so the runtime
+/// reads a garbage executor — SIGSEGV in `swift_task_isMainExecutorImpl` on the main thread,
+/// reproduced four times across two days. A plain `Canvas` in `body`, re-rendered when the
+/// controller's `level` changes (~24Hz), is the same movement without the crash.
 struct VUMeter: View {
     /// Current input level, 0...1.
     let level: Float
     var isActive: Bool
 
-    /// The needle's physical state lives in a plain reference type, deliberately *not* in
-    /// `@State`. The movement has to advance once per drawn frame, and SwiftUI state mutated
-    /// inside a `Canvas` draw closure is a mutation during view update — which SwiftUI logs
-    /// as undefined behavior and which, at 120fps, floods the process. A reference the view
-    /// merely holds is invisible to the state graph, so stepping it is safe.
-    @State private var movement = NeedleMovement()
-
-    private final class NeedleMovement {
-        var position: Double = 0
-        var velocity: Double = 0
-    }
-
     var body: some View {
-        TimelineView(.animation) { timeline in
-            Canvas { context, size in
-                draw(in: &context, size: size, at: timeline.date)
-            }
+        let position = Double(min(max(level, 0), 1))
+        Canvas { context, size in
+            draw(in: &context, size: size, at: position)
         }
         .background(DS.Color.meterFace)
         .overlay(
@@ -288,9 +285,7 @@ struct VUMeter: View {
         )
     }
 
-    private func draw(in context: inout GraphicsContext, size: CGSize, at date: Date) {
-        advanceNeedle()
-
+    private func draw(in context: inout GraphicsContext, size: CGSize, at position: Double) {
         let pivot = CGPoint(x: size.width / 2, y: size.height * 1.05)
         let radius = min(size.width * 0.46, size.height * 0.92)
         let sweep = DS.Material.needleSweep.radians
@@ -311,7 +306,7 @@ struct VUMeter: View {
         }
 
         // Needle.
-        let angle = -sweep / 2 + sweep * movement.position
+        let angle = -sweep / 2 + sweep * position
         var needlePath = Path()
         needlePath.move(to: pivot)
         needlePath.addLine(to: point(from: pivot, angle: angle, distance: radius * 0.98))
@@ -320,20 +315,6 @@ struct VUMeter: View {
             with: .color(DS.Color.meterNeedle),
             lineWidth: DS.Material.needleWidth
         )
-    }
-
-    /// Critically-damped-ish spring toward the target, tuned to VU ballistics.
-    private func advanceNeedle() {
-        let target = Double(min(max(level, 0), 1))
-        let rising = target > movement.position
-        let time = rising ? DS.Motion.needleAttack : DS.Motion.needleRelease
-        // Frame-rate independent enough at 60–120Hz, and a meter is forgiving of the rest.
-        let stiffness = 1 / time
-        let delta = target - movement.position
-        movement.velocity += delta * stiffness * 0.16
-        movement.velocity *= 0.72
-        movement.position += movement.velocity
-        movement.position = min(max(movement.position, 0), 1 + DS.Motion.needleOvershoot)
     }
 
     private func point(from origin: CGPoint, angle: Double, distance: CGFloat) -> CGPoint {

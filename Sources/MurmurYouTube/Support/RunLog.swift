@@ -61,6 +61,12 @@ final class RunStore {
     func reload() {
         runs = RunLog.load()
     }
+
+    /// Injects already-loaded runs, skipping a redundant file decode. `record()` has the
+    /// fresh list in hand; only `reload()` reads the disk.
+    func replace(runs: [DictationRun]) {
+        self.runs = runs
+    }
 }
 
 /// Appends every dictation to a JSONL file.
@@ -75,9 +81,22 @@ enum RunLog {
 
     private static var runsURL: URL { directory.appendingPathComponent("runs.jsonl") }
 
+    /// Newest runs kept; the oldest is dropped once a new one pushes the count past this.
+    static let maxRuns = 25
+
     static func record(_ run: DictationRun) {
         append(run)
-        RunStore.shared.reload()
+
+        // The file is oldest-first (it's only ever appended to), so the newest `maxRuns`
+        // are its suffix. Trimming here rather than in `load()` keeps the file itself
+        // bounded instead of just the view of it — otherwise it grows forever and only
+        // looks capped. `rewrite` reloads the store itself, hence the else.
+        let runs = load()
+        if runs.count > maxRuns {
+            rewrite(Array(runs.suffix(maxRuns)))
+        } else {
+            RunStore.shared.replace(runs: runs)
+        }
     }
 
     private static func append(_ run: DictationRun) {

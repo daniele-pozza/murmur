@@ -67,6 +67,29 @@ final class DictationController {
         cancelDictation()
     }
 
+    /// Full, awaited teardown for app quit. Unlike `deactivate()`, this doesn't return
+    /// until the model is actually gone — the caller must not let the process reach
+    /// `exit()` before this completes, or ggml's atexit cleanup can crash freeing a
+    /// Metal device it doesn't expect to still be resident.
+    func shutdown() async {
+        hotkey.stop()
+        capture.stop()
+        audioContinuation?.finish()
+        audioContinuation = nil
+        feedTask?.cancel()
+        await feedTask?.value
+        feedTask = nil
+        consumeTask?.cancel()
+        await consumeTask?.value
+        consumeTask = nil
+        await engine?.shutdown()
+        engine = nil
+        // Covers the common case too: no active dictation, but the model is still warm
+        // in the cache from an earlier one, with no live `engine` to call shutdown() on.
+        await NemotronEngine.shutdownModel()
+        state = .idle
+    }
+
     /// Re-arms the tap after the user picks a different push-to-talk key.
     @discardableResult
     func reloadHotkey() -> Bool {
@@ -99,7 +122,14 @@ final class DictationController {
     private func beginDictation() {
         guard case .idle = state else { return }
         state = .starting
-        transcript = NemotronEngine.isModelReady ? "" : "Loading speech model…"
+        // Deliberately NOT a placeholder string written into `transcript`. That's where
+        // the engine's real output lands, and nothing overwrites it until the first
+        // chunk arrives — which only happens once the model recognizes a word. Speak
+        // into silence and the placeholder would sit there forever, claiming to be
+        // loading a model that finished loading seconds ago. `.starting` already means
+        // exactly "spinning up, not yet capturing", so the HUD derives the label from
+        // state instead and there is no stored string left to go stale.
+        transcript = ""
         holdStarted = Date()
 
         Task { @MainActor in
@@ -138,6 +168,9 @@ final class DictationController {
                     },
                     onLevel: { [weak self] level in
                         Task { @MainActor in self?.updateLevel(level) }
+                    },
+                    onConfigurationChange: { [weak self] in
+                        Task { @MainActor in self?.handleConfigurationChange() }
                     }
                 )
 
@@ -209,6 +242,15 @@ final class DictationController {
         }
     }
 
+    /// The audio engine's configuration changed mid-capture (input device switched, sample
+    /// rate changed). The captured audio is no longer trustworthy, so drop the session and
+    /// reset — the next press starts from scratch with a fresh engine.
+    private func handleConfigurationChange() {
+        guard state.isActive else { return }
+        Log.audio.info("audio configuration changed mid-dictation — dropping session")
+        cancelDictation()
+    }
+
     private func cancelDictation() {
         capture.stop()
         audioContinuation?.finish()
@@ -273,7 +315,14 @@ final class DictationController {
         audioContinuation = nil
         feedTask?.cancel()
         feedTask = nil
-        engine = nil
+
+        // Same as `cancelDictation`: the engine's `finish()` arms the idle-unload timer.
+        // Dropping the reference without it would leave the model resident — `fail()` runs
+        // after the model has loaded, so this is the one path that must not leak 716MB.
+        let engine = self.engine
+        self.engine = nil
+        Task { await engine?.finish() }
+
         consumeTask?.cancel()
         consumeTask = nil
         state = .error(message)

@@ -1,4 +1,4 @@
-# Murmur YouTube
+# Murmur
 
 Press-to-toggle dictation for macOS, multilingual. Press a key, talk in Italian, English,
 or a mix of the two, press again — cleaned-up text lands in whatever text field has focus.
@@ -45,7 +45,7 @@ Then grant two permissions — neither is optional, and neither can be requested
 | **Accessibility** | System Settings ▸ Privacy & Security ▸ Accessibility | The `CGEventTap` that sees the hotkey, and the AX text insert |
 | **Microphone** | Prompted on first dictation | Audio capture |
 
-Restart Murmur YouTube after granting Accessibility. Then press **Right ⌥** to start
+Restart Murmur after granting Accessibility. Then press **Right ⌥** to start
 talking, press it again to stop.
 
 ### Why grants survive rebuilds here
@@ -55,9 +55,13 @@ changes on every build, so the rebuilt binary stops satisfying the stored requir
 and the symptom is nasty: the Accessibility toggle still **shows as on** while the app is
 reported untrusted, and flipping it changes nothing because the stale row is the problem.
 
-The `Makefile` therefore signs with a stable Developer ID (auto-detected via
-`security find-identity`, falling back to ad-hoc). Verified: rebuild + reinstall keeps both
-grants with no re-prompt.
+The `Makefile` therefore signs with a stable identity: a Developer ID if one is present
+(auto-detected via `security find-identity`), otherwise a persistent self-signed
+**"Murmur Local Signing"** cert created in the login keychain on first build and trusted as
+a root. Because the signing cert never changes, the *certificate leaf* in the stored
+requirement stays constant and the grant survives `make` — verified: rebuild + reinstall
+keeps both grants with no re-prompt. (Ad-hoc signing remains only as a last resort if even
+the keychain can't be written.)
 
 If a grant ever does get wedged, reset that one row and re-add — never toggle:
 
@@ -162,13 +166,39 @@ loads from its GGUF weights in about a second. Streaming is real, too —
 `NemotronEngine.feed()` yields committed/tentative text as audio arrives (via
 `transcribe.cpp`'s stream API), so the HUD updates live instead of only at release.
 
-**The model file itself isn't bundled or downloaded by this app.** It expects the GGUF
-already sitting in the shared Hugging Face cache at
-`~/.cache/huggingface/hub/models--handy-computer--nemotron-3.5-asr-streaming-0.6b-gguf/`
-— the same path the [Handy](https://github.com/cjpais/Handy) dictation app populates on
-its first run. Install Handy once (even if you don't keep using it) to get the weights;
-this app never talks to Handy itself, it only reads that cache path. `NemotronEngine`
-fails with a clear error at dictation start if the file isn't there.
+**The model file itself isn't bundled or downloaded by this app.** Put
+`nemotron-3.5-asr-streaming-0.6b-Q5_K_M.gguf` (from
+[the GGUF repo](https://huggingface.co/handy-computer/nemotron-3.5-asr-streaming-0.6b-gguf))
+in `~/Library/Application Support/MurmurYouTube/`. `NemotronEngine` fails with a clear
+error naming the path if it isn't there.
+
+Deliberately *not* the shared Hugging Face cache, which an earlier version read from. That
+cache addresses blobs by content hash behind a per-file symlink, so any tool re-verifying
+the repo restores whatever the manifest says — quietly swapping the quant, and the RAM
+footprint with it, with nothing in the log to explain it.
+
+### Memory and load time
+
+Measured on an 8GB M1 (`phys_footprint` after load, then warm reload):
+
+| quant | file | footprint | warm load |
+|---|---|---|---|
+| Q4_K_M | 473 MB | 655 MB | 0.6s |
+| **Q5_K_M** (used) | 534 MB | 716 MB | 0.7s |
+| Q8_0 | 716 MB | 895 MB | 1.5s |
+
+Footprint is file size + ~181 MB of fixed ggml-Metal pipeline and graph memory in every
+case, so dropping a quant level only buys back its own file-size difference — Q4 saves
+61 MB of 716, which isn't worth the accuracy on a 0.6B model. Two knobs that look
+relevant and aren't: `SessionOptions.nCtx` is a documented no-op for this model's family
+(it loads as `arch == "parakeet"`, which the C header lists as unbounded), and the
+library has no mmap path, so the weights are a real resident copy either way.
+
+What does work is not holding the model when you aren't talking. `NemotronModelCache`
+releases it after 20s idle, which is cheap precisely because a warm reload is 0.7s. A
+*cold* load — first dictation after a reboot, file not yet in the page cache — measured
+25s, so `AppDelegate` kicks `NemotronEngine.preload()` at launch to spend that while
+nobody's waiting on it.
 
 ---
 
@@ -183,8 +213,9 @@ fails with a clear error at dictation start if the file isn't there.
    turn out to be recurring in practice rather than one-off.
 3. **Branding.** `Brand` in `HUDView.swift` is a two-color placeholder gradient. App icon,
    real palette, HUD motion design, onboarding.
-4. **Developer ID signing + notarization.** Ends the TCC-reset churn and makes the app
-   distributable (not a goal for this fork — personal use only).
+4. **Developer ID signing + notarization.** The TCC-reset churn is already handled locally
+   by the self-signed signing identity; a real Developer ID would only add notarization and
+   distribution (not a goal for this fork — personal use only).
 
 ---
 
@@ -196,7 +227,7 @@ fails with a clear error at dictation start if the file isn't there.
 
 **Not yet verified:** the actual dictation path — press key, talk, press again, get text.
 That needs a human with a microphone, Accessibility + Microphone permissions granted, and
-the Nemotron GGUF present in the shared Hugging Face cache (see "Speech engine" above).
+the Nemotron GGUF present in Application Support (see "Speech engine" above).
 Also unverified: whether Nemotron's per-utterance language detection is good enough in
 practice for Italian/English mixed speech, and whether `RuleBasedFormatter`'s cleanup
 rules hold up on Italian output (see "Not built yet" above).

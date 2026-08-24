@@ -18,21 +18,50 @@ BUILD    := $(SCRATCH)/$(CONFIG)/$(EXEC)
 ## or similar detritus not allowed"). `xattr -cr` immediately before signing is not enough
 ## — the provider re-stamps in between. Staging in ~/Library/Caches sidesteps it entirely.
 STAGE    := $(HOME)/Library/Caches/MurmurYouTubeBuild
-APPNAME  := Murmur YouTube.app
+APPNAME  := Murmur.app
 BUNDLE   := $(STAGE)/$(APPNAME)
 CONTENTS := $(BUNDLE)/Contents
 
 ## TCC keys the Accessibility grant to the code signature, so an ad-hoc signature — which
 ## changes on every build — makes the user re-grant after every `make`. Signing with a
-## stable Developer ID keeps the identity constant and the grant sticky. Falls back to
-## ad-hoc ("-") on a machine without the cert.
-SIGN_ID := $(shell security find-identity -v -p codesigning 2>/dev/null \
-             | grep "Developer ID Application" | head -1 | sed -E 's/.*"(.*)".*/\1/')
-ifeq ($(strip $(SIGN_ID)),)
-SIGN_ID := -
-endif
+## stable identity keeps the signature constant and the grant sticky. Prefer a real
+## Developer ID if present; otherwise the `signing-identity` target creates a self-signed
+## "Murmur Local Signing" cert in the login keychain (once) and we sign with that.
+## `=` (recursive), not `:=`: the expression must be evaluated at USE time, after the
+## `signing-identity` prerequisite has run — a parse-time `ifeq` check runs too early and
+## the fallback literal below would sign ad-hoc on the first build.
+SIGN_ID = $(or $(shell security find-identity -v -p codesigning 2>/dev/null \
+                | grep "Developer ID Application\|Murmur Local Signing" | head -1 \
+                | sed -E 's/.*"(.*)".*/\1/'), -)
 
-.PHONY: all build app run install clean icon
+.PHONY: all build app run install clean icon signing-identity
+
+## Ensure a stable codesigning identity exists. With no Developer ID on the machine, make
+## a self-signed "Murmur Local Signing" cert in the login keychain, trusted as a root so
+## codesign will use it. Idempotent: does nothing once either kind of identity is present,
+## and the identity is stable across rebuilds — which is exactly why the Accessibility
+## grant survives `make`.
+signing-identity:
+	@if security find-identity -v -p codesigning 2>/dev/null | grep -q "Developer ID Application\|Murmur Local Signing"; then \
+		echo "signing identity present (Developer ID or Murmur Local Signing)"; \
+	else \
+		KC=$$(security default-keychain | tr -d '"'); \
+		TMP=$$(mktemp -d); \
+		openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 3650 \
+			-subj "/CN=Murmur Local Signing" \
+			-addext "basicConstraints=critical,CA:FALSE" \
+			-addext "keyUsage=digitalSignature" \
+			-addext "extendedKeyUsage=codeSigning" \
+			-keyout $$TMP/signing.key.pem -out $$TMP/signing.cert.pem 2>/dev/null; \
+		openssl pkcs12 -export -legacy -out $$TMP/signing.p12 \
+			-inkey $$TMP/signing.key.pem -in $$TMP/signing.cert.pem \
+			-passout pass:murmur -name "Murmur Local Signing" 2>/dev/null; \
+		security import $$TMP/signing.p12 -k "$$KC" -P murmur -T /usr/bin/codesign -A; \
+		security find-certificate -c "Murmur Local Signing" -p "$$KC" > $$TMP/real.pem; \
+		security add-trusted-cert -d -r trustRoot -k "$$KC" $$TMP/real.pem; \
+		rm -rf $$TMP; \
+		echo "created codesigning identity: Murmur Local Signing"; \
+	fi
 
 all: app
 
@@ -48,7 +77,7 @@ icon:
 
 ## Assemble a real .app bundle. TCC (microphone + Accessibility) keys on bundle identity
 ## and code signature, so the raw SwiftPM binary can't be used directly.
-app: build
+app: build signing-identity
 	@rm -rf "$(BUNDLE)"
 	@mkdir -p "$(CONTENTS)/MacOS" "$(CONTENTS)/Resources"
 	@cp $(BUILD) "$(CONTENTS)/MacOS/$(EXEC)"

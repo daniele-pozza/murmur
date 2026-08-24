@@ -22,3 +22,6 @@ artifacts/
 models/
 *.onnx
 *.nemo
+
+# Claude Code session artifacts
+.claude/

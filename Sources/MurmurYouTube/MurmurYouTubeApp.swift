@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import SwiftUI
 
 @main
@@ -8,7 +9,7 @@ struct MurmurYouTubeApp: App {
     var body: some Scene {
         // The main window. A `Window` rather than a `WindowGroup`: this app has one front
         // panel, and letting ⌘N spawn a second copy of a tape deck makes no sense.
-        Window("Murmur YouTube", id: "main") {
+        Window("Murmur", id: "main") {
             MainWindow(controller: delegate.controller)
         }
         .defaultSize(width: 860, height: 620)
@@ -54,11 +55,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         observeState()
-        Log.app.info("Murmur YouTube ready — press \(Settings.shared.pushToTalkKey.displayName) to dictate")
+        Log.app.info("Murmur ready — press \(Settings.shared.pushToTalkKey.displayName) to dictate")
+
+        // Detached, so a cold model load (~25s the first time after a reboot) can't hold
+        // up the main actor. It arms its own idle-unload timer, so a launch nobody
+        // dictates after doesn't leave 716MB parked forever.
+        Task.detached(priority: .utility) { await NemotronEngine.preload() }
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
-        controller.deactivate()
+    /// `.terminateLater` + a manual `_exit` instead of the default `.terminateNow`: the
+    /// model has to be released *before* the process reaches `exit()`, not during it.
+    /// ggml's own atexit cleanup frees its Metal device on the way out, and it aborts if
+    /// that device is still resident when atexit runs (SIGSEGV in
+    /// `ggml_metal_rsets_free`, reliably reproducible on every quit before this fix).
+    /// Releasing the model ourselves first, then skipping straight to `_exit` — which,
+    /// unlike `exit`, never runs atexit handlers — avoids ggml's cleanup path entirely.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        Task { @MainActor in
+            await controller.shutdown()
+            _exit(0)
+        }
+        return .terminateLater
     }
 
     /// Shows and hides the HUD in step with the controller's state.
@@ -122,7 +139,7 @@ private struct MenuContent: View {
             Button("Grant Microphone…") { Permissions.openMicrophoneSettings() }
         }
 
-        Button("Quit Murmur YouTube") { NSApp.terminate(nil) }
+        Button("Quit Murmur") { NSApp.terminate(nil) }
             .keyboardShortcut("q")
     }
 }
