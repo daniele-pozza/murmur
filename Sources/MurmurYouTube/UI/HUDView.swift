@@ -17,6 +17,14 @@ enum HUDMotion {
     /// this the glow's opacity was a step function of `isSpeaking` — every silence snapped
     /// it straight to 0, which read as a hard cut rather than the halo settling down.
     static let glowRelease: TimeInterval = 0.45
+
+    /// The single owner of the sine "breathe" formula the waveform bars and the glow
+    /// pulse both ride: `amplitude * (0.55 + 0.45 * sin(time * 6.0 + phase))`. Callers
+    /// hand-rolled this and the constants drifted apart, which is where the sizing bugs
+    /// in 2e0ff81 / 95b3e4e / 5d5cd2e came from — change the timing here only.
+    static func breathe(time: TimeInterval, phase: Double = 0, amplitude: Double) -> Double {
+        amplitude * (0.55 + 0.45 * sin(time * 6.0 + phase))
+    }
 }
 
 /// Shared by `HUDView` and `HUDPanel`. The panel's window is exactly `pillSize` plus
@@ -163,9 +171,10 @@ struct HUDView: View {
 
     private func glowPulse(at time: TimeInterval, release: Double) -> CGFloat {
         guard release > 0 else { return 0 }
-        let wave = sin(time * 6.0)
-        let amplitude = CGFloat(max(HUDMotion.minLevel, controller.level)) * CGFloat(release)
-        return amplitude * (0.55 + 0.45 * CGFloat(wave))
+        return CGFloat(HUDMotion.breathe(
+            time: time,
+            amplitude: Double(max(HUDMotion.minLevel, controller.level)) * release
+        ))
     }
 
     private func glowOpacity(at time: TimeInterval, release: Double) -> Double {
@@ -241,11 +250,10 @@ private struct Waveform: View {
         let floorHeight: CGFloat = 2
         guard isActive else { return floorHeight }
 
-        let phase = Self.phases[index]
-        let wave = sin(time * 6.0 + phase * .pi * 2)
-        let amplitude = CGFloat(max(HUDMotion.minLevel, level))
+        let phase = Self.phases[index] * .pi * 2
+        let amplitude = Double(max(HUDMotion.minLevel, level))
         // Wave rides on top of the level so bars still breathe during quiet passages.
-        let scaled = amplitude * (0.55 + 0.45 * CGFloat(wave))
+        let scaled = CGFloat(HUDMotion.breathe(time: time, phase: phase, amplitude: amplitude))
         // Half of the pre-halving peak (23), matching the bars' halved frame.
         return floorHeight + max(0, scaled) * 11
     }
