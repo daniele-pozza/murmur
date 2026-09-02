@@ -13,6 +13,9 @@ struct MurmurYouTubeApp: App {
             MainWindow(controller: delegate.controller)
         }
         .defaultSize(width: 860, height: 620)
+        // Menu-bar app: launching shouldn't put a window on screen. Open it from the menu
+        // bar item when you actually want it.
+        .defaultLaunchBehavior(.suppressed)
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .newItem) {}
@@ -37,7 +40,7 @@ struct MurmurYouTubeApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let controller = DictationController()
     private var hud: HUDPanel?
-    private var stateObservation: NSObjectProtocol?
+    private var hudSync: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Menu-bar-only, like Handy: no Dock icon or Cmd-Tab entry. The main window still
@@ -55,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         observeState()
+        startHudSync()
         Log.app.info("Murmur ready — press \(Settings.shared.pushToTalkKey.displayName) to dictate")
 
         // Detached, so a cold model load (~25s the first time after a reboot) can't hold
@@ -85,13 +89,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
-                if self.controller.state.isActive {
-                    self.hud?.present()
-                } else {
-                    self.hud?.dismiss()
-                }
+                Log.app.info("HUD state → \(String(describing: self.controller.state), privacy: .public)")
+                self.syncHUD()
                 self.observeState()
             }
+        }
+    }
+
+    /// Keeps the pill in step with `controller.state` — and heals it when something
+    /// else knocked it out of step.
+    ///
+    /// The observation above is a chain of one-shot callbacks that each have to
+    /// re-register the next one, and the window server can drop a borderless panel with no
+    /// state change at all to react to. Either way the pill goes missing for a whole
+    /// utterance while dictation runs fine underneath — the bug this timer exists for.
+    /// Polling makes the pill a function of the current state instead of the result of an
+    /// unbroken event chain, so whatever went wrong heals within half a second.
+    /// `.common` mode: a default-mode timer stalls while a menu is open or a window is
+    /// being dragged. `present()`/`dismiss()` are both idempotent, hence no extra guards.
+    private func startHudSync() {
+        hudSync?.invalidate()
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.syncHUD() }
+        }
+        timer.tolerance = 0.2
+        RunLoop.main.add(timer, forMode: .common)
+        hudSync = timer
+    }
+
+    private func syncHUD() {
+        guard let hud else { return }
+        if controller.state.isActive {
+            hud.present()
+        } else if hud.isVisible {
+            hud.dismiss()
         }
     }
 
@@ -109,6 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 private struct MenuContent: View {
     @Bindable var controller: DictationController
     @State private var settings = Settings.shared
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Text("Press \(settings.pushToTalkKey.displayName) to dictate")
@@ -137,6 +169,12 @@ private struct MenuContent: View {
         }
         if !Permissions.hasMicrophone {
             Button("Grant Microphone…") { Permissions.openMicrophoneSettings() }
+        }
+
+        // The window no longer opens at launch, so this is the only way back to it.
+        Button("Open Murmur…") {
+            NSApp.activate(ignoringOtherApps: true)
+            openWindow(id: "main")
         }
 
         Button("Quit Murmur") { NSApp.terminate(nil) }

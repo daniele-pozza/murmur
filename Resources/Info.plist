@@ -26,10 +26,12 @@
 	<string>AppIcon</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>26.0</string>
-	<!-- A regular app: dock icon, app menu, standard windows. The menu bar item remains
-	     for status and the hotkey while you're working elsewhere, but it is secondary. -->
+	<!-- Menu-bar-only from launch: no Dock icon, no Cmd-Tab entry, no app menu. Setting
+	     this here (rather than relying solely on the runtime `setActivationPolicy(.accessory)`
+	     call) means the Dock icon never even flashes during the ~launch window before that
+	     code runs. The main window still opens from the menu bar item when wanted. -->
 	<key>LSUIElement</key>
-	<false/>
+	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>

@@ -2,14 +2,16 @@ import AppKit
 import Carbon.HIToolbox
 import Foundation
 
-/// Which modifier key holds the mic open.
+/// Which key toggles dictation.
 enum PushToTalkKey: String, CaseIterable, Sendable {
+    case f19
     case rightOption
     case fn
     case rightCommand
 
     var keyCode: Int64 {
         switch self {
+        case .f19: Int64(kVK_F19)                   // 80
         case .rightOption: Int64(kVK_RightOption)   // 61
         case .fn: Int64(kVK_Function)               // 63
         case .rightCommand: Int64(kVK_RightCommand) // 54
@@ -30,11 +32,13 @@ enum PushToTalkKey: String, CaseIterable, Sendable {
         case .rightOption: CGEventFlags(rawValue: 0x40)   // NX_DEVICERALTKEYMASK
         case .rightCommand: CGEventFlags(rawValue: 0x10)  // NX_DEVICERCMDKEYMASK
         case .fn: .maskSecondaryFn                        // no left/right variant exists
+        case .f19: []                                     // not a modifier — see isPlainKey
         }
     }
 
     var displayName: String {
         switch self {
+        case .f19: "⇪ Caps Lock (F19)"
         case .rightOption: "Right ⌥"
         case .fn: "fn"
         case .rightCommand: "Right ⌘"
@@ -44,6 +48,16 @@ enum PushToTalkKey: String, CaseIterable, Sendable {
     /// Swallowing `fn` would break fn+arrow, fn+delete and the emoji picker, so we let it
     /// through. Dedicated right-hand modifiers are safe to consume.
     var shouldConsumeEvent: Bool { self != .fn }
+
+    /// F19 is an ordinary key, not a modifier: it arrives as keyDown/keyUp, never as
+    /// flagsChanged, and carries no flag bit to test.
+    ///
+    /// Caps Lock itself is unreachable from here — it's consumed inside IOKit and never
+    /// surfaces as a CGEvent at *any* tap location (verified against both
+    /// `.cgSessionEventTap` and `.cghidEventTap`: Shift and Command arrive, keycode 57
+    /// never does). Karabiner-Elements sits below that layer, so the working route is a
+    /// `caps_lock → f19` rule there; this app just watches for F19.
+    var isPlainKey: Bool { self == .f19 }
 }
 
 /// Watches for a held modifier key using a `CGEventTap`.
@@ -67,6 +81,8 @@ final class HotkeyMonitor {
         stop()
 
         let mask = (1 << CGEventType.flagsChanged.rawValue)
+            | (1 << CGEventType.keyDown.rawValue)
+            | (1 << CGEventType.keyUp.rawValue)
         let refcon = Unmanaged.passUnretained(self).toOpaque()
 
         guard let tap = CGEvent.tapCreate(
@@ -83,8 +99,9 @@ final class HotkeyMonitor {
                 // callback genuinely does run on the main thread.
                 let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
                 let flags = event.flags
+                let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
                 let consume = MainActor.assumeIsolated {
-                    monitor.handle(type: type, keyCode: keyCode, flags: flags)
+                    monitor.handle(type: type, keyCode: keyCode, flags: flags, isRepeat: isRepeat)
                 }
                 return consume ? nil : Unmanaged.passUnretained(event)
             },
@@ -119,14 +136,24 @@ final class HotkeyMonitor {
     // MARK: - Tap callback
 
     /// - Returns: `true` if the event should be swallowed rather than passed along.
-    private func handle(type: CGEventType, keyCode: Int64, flags: CGEventFlags) -> Bool {
+    private func handle(type: CGEventType, keyCode: Int64, flags: CGEventFlags, isRepeat: Bool) -> Bool {
         // The system disables a tap that runs too slowly or is interrupted; re-arm it.
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             return false
         }
 
-        guard type == .flagsChanged, keyCode == key.keyCode else { return false }
+        guard keyCode == key.keyCode else { return false }
+
+        if key.isPlainKey {
+            guard type == .keyDown || type == .keyUp else { return false }
+            // Fire once per physical press: ignore the release and the autorepeat storm
+            // from holding the key down.
+            if type == .keyDown, !isRepeat { onPress?() }
+            return key.shouldConsumeEvent
+        }
+
+        guard type == .flagsChanged else { return false }
 
         let nowPressed = flags.contains(key.flag)
         guard nowPressed != isPressed else { return false }

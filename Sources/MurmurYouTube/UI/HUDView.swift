@@ -13,6 +13,10 @@ enum HUDMotion {
     /// throughout ordinary speech. Holding "speaking" true for this long after the last
     /// loud frame bridges those gaps while still dropping out shortly after real silence.
     static let speakingHold: TimeInterval = 0.4
+    /// How long the glow takes to fade to nothing once `speakingHold` runs out. Without
+    /// this the glow's opacity was a step function of `isSpeaking` — every silence snapped
+    /// it straight to 0, which read as a hard cut rather than the halo settling down.
+    static let glowRelease: TimeInterval = 0.45
 }
 
 /// Shared by `HUDView` and `HUDPanel`. The panel's window is exactly `pillSize` plus
@@ -89,10 +93,11 @@ struct HUDView: View {
         // for it regardless.
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !controller.state.isActive)) { timeline in
             let t = timeline.date.timeIntervalSinceReferenceDate
+            let release = glowRelease(at: timeline.date)
             RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .fill(isFinishing ? Brand.processingGradient : Brand.gradient)
-                .opacity(glowOpacity(at: t))
-                .scaleEffect(glowScale(at: t))
+                .opacity(glowOpacity(at: t, release: release))
+                .scaleEffect(glowScale(at: t, release: release))
                 .frame(width: HUDLayout.pillSize.width - 10, height: HUDLayout.pillSize.height - 10)
                 .blur(radius: 28)
         }
@@ -145,20 +150,31 @@ struct HUDView: View {
         controller.state.isActive && Date().timeIntervalSince(lastLoudAt) < HUDMotion.speakingHold
     }
 
-    private func glowPulse(at time: TimeInterval) -> CGFloat {
-        guard isSpeaking else { return 0 }
+    /// 1 while within `speakingHold` of the last loud frame, easing down to 0 over
+    /// `glowRelease` afterward — the glow's fade-out rather than a hard on/off switch.
+    private func glowRelease(at now: Date) -> Double {
+        guard controller.state.isActive else { return 0 }
+        let sinceLoud = now.timeIntervalSince(lastLoudAt)
+        guard sinceLoud > HUDMotion.speakingHold else { return 1 }
+        let intoRelease = sinceLoud - HUDMotion.speakingHold
+        guard intoRelease < HUDMotion.glowRelease else { return 0 }
+        return 1 - intoRelease / HUDMotion.glowRelease
+    }
+
+    private func glowPulse(at time: TimeInterval, release: Double) -> CGFloat {
+        guard release > 0 else { return 0 }
         let wave = sin(time * 6.0)
-        let amplitude = CGFloat(max(HUDMotion.minLevel, controller.level))
+        let amplitude = CGFloat(max(HUDMotion.minLevel, controller.level)) * CGFloat(release)
         return amplitude * (0.55 + 0.45 * CGFloat(wave))
     }
 
-    private func glowOpacity(at time: TimeInterval) -> Double {
-        guard isSpeaking else { return 0 }
-        return 0.35 + Double(glowPulse(at: time)) * 0.5
+    private func glowOpacity(at time: TimeInterval, release: Double) -> Double {
+        guard release > 0 else { return 0 }
+        return (0.35 + Double(glowPulse(at: time, release: release)) * 0.5) * release
     }
 
-    private func glowScale(at time: TimeInterval) -> CGFloat {
-        1.0 + glowPulse(at: time) * 0.12
+    private func glowScale(at time: TimeInterval, release: Double) -> CGFloat {
+        1.0 + glowPulse(at: time, release: release) * 0.12
     }
 
     private var isError: Bool {
