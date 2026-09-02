@@ -33,10 +33,17 @@ actor NemotronEngine: TranscriptionEngine {
     }
 
     func start() async throws -> AsyncThrowingStream<TranscriptionChunk, Error> {
-        let model = try await NemotronModelCache.shared.model(path: Self.modelPath)
-        let session = try model.session()
-        let stream = try session.stream()
-        self.stream = stream
+        let model = try await NemotronModelCache.shared.acquire(path: Self.modelPath)
+        do {
+            let session = try model.session()
+            let stream = try session.stream()
+            self.stream = stream
+        } catch {
+            // Don't leak the acquired refcount — the cache would hold the model warm
+            // forever (nobody else will release it for us).
+            await NemotronModelCache.shared.release()
+            throw error
+        }
 
         let (asyncStream, continuation) = AsyncThrowingStream<TranscriptionChunk, Error>.makeStream()
         self.continuation = continuation
@@ -63,7 +70,7 @@ actor NemotronEngine: TranscriptionEngine {
             continuation?.finish()
             continuation = nil
             stream = nil
-            Task { await NemotronModelCache.shared.scheduleIdleUnload() }
+            Task { await NemotronModelCache.shared.release() }
         }
         guard let stream else { return }
         do {
@@ -79,7 +86,7 @@ actor NemotronEngine: TranscriptionEngine {
         continuation?.finish()
         continuation = nil
         stream = nil
-        await NemotronModelCache.shared.forceUnload()
+        await NemotronModelCache.shared.release()
     }
 
     /// Loads the model in the background at app launch so the first press doesn't pay
@@ -88,15 +95,13 @@ actor NemotronEngine: TranscriptionEngine {
     /// Failures are logged and swallowed: `start()` reports them properly when the user
     /// actually presses the key, and there is no UI to show an error to at launch.
     ///
-    /// ponytail: pressing the key *during* a cold preload can leave this call's
-    /// `scheduleIdleUnload` running under the live dictation, dropping the cache entry
-    /// mid-utterance. Harmless — the active `Session` holds its own strong reference to
-    /// the `Model`, so it only costs a 0.7s reload on the following press — so no
-    /// interlock. Add one if that ever shows up as a real stutter.
+    /// The acquire/release pair interlocks with a dictation that starts mid-preload:
+    /// the real `acquire()` takes its own refcount, so this `release()` leaves the
+    /// count above zero and the idle unload never fires under the live session.
     static func preload() async {
         do {
-            _ = try await NemotronModelCache.shared.model(path: modelPath)
-            await NemotronModelCache.shared.scheduleIdleUnload()
+            _ = try await NemotronModelCache.shared.acquire(path: modelPath)
+            await NemotronModelCache.shared.release()
         } catch {
             Log.speech.error("Nemotron preload failed: \(error.localizedDescription)")
         }
@@ -106,7 +111,7 @@ actor NemotronEngine: TranscriptionEngine {
     /// live — the common case at app quit, since the model can be sitting warm from
     /// an earlier dictation with no active `engine` around to call `shutdown()` on.
     static func shutdownModel() async {
-        await NemotronModelCache.shared.forceUnload()
+        await NemotronModelCache.shared.unloadNow()
     }
 }
 
@@ -122,57 +127,100 @@ private actor NemotronModelCache {
     /// ponytail: fixed timeout, no settings UI — revisit if 20s feels wrong.
     private static let idleUnloadDelay: Duration = .seconds(20)
 
-    private var loaded: Model?
-    private var loadTask: Task<Model, Error>?
-    private var idleUnloadTask: Task<Void, Never>?
-
-    func model(path: String) async throws -> Model {
-        idleUnloadTask?.cancel()
-        idleUnloadTask = nil
-
-        if let loaded { return loaded }
-        if let loadTask { return try await loadTask.value }
-
-        guard FileManager.default.fileExists(atPath: path) else {
-            throw TranscriptionError.modelInstallFailed(
-                "Nemotron GGUF not found at \(path). Download "
-                    + "nemotron-3.5-asr-streaming-0.6b-Q5_K_M.gguf from "
-                    + "huggingface.co/handy-computer/nemotron-3.5-asr-streaming-0.6b-gguf "
-                    + "and put it there, then retry."
-            )
-        }
-
-        let task = Task<Model, Error> {
-            Log.speech.info("loading Nemotron model…")
-            let model = try Model(path: path)
-            Log.speech.info("Nemotron model ready (backend: \(model.backend, privacy: .public))")
-            return model
-        }
-        loadTask = task
-        defer { loadTask = nil }
-
-        let model = try await task.value
-        loaded = model
-        return model
+    /// unloaded → loading → ready(model, refcount:). There is no `unloading` case:
+    /// unload is synchronous on the actor, so it never exists between messages for
+    /// another caller to observe. `ready(_, refcount: 0)` means "warm, idle timer
+    /// running" — the model is dropped only when the timer fires with the count
+    /// still at zero, or by `unloadNow()` at process exit.
+    private enum State {
+        case unloaded
+        case loading(Task<Model, Error>)
+        case ready(model: Model, refcount: Int)
     }
 
-    /// Called after every dictation. Frees the model if the idle window elapses without
-    /// another `model(path:)` call cancelling this task first.
-    func scheduleIdleUnload() {
-        idleUnloadTask?.cancel()
-        idleUnloadTask = Task {
+    private var state = State.unloaded
+    private var idleTask: Task<Void, Never>?
+
+    /// Takes one refcount and returns the model. Concurrent callers share one load
+    /// task; every caller that awaited it promotes the count exactly once.
+    func acquire(path: String) async throws -> Model {
+        idleTask?.cancel()
+        idleTask = nil
+
+        switch state {
+        case .ready(let model, let refcount):
+            state = .ready(model: model, refcount: refcount + 1)
+            return model
+        case .loading(let task):
+            let model = try await task.value
+            promote(model)
+            return model
+        case .unloaded:
+            guard FileManager.default.fileExists(atPath: path) else {
+                throw TranscriptionError.modelInstallFailed(
+                    "Nemotron GGUF not found at \(path). Download "
+                        + "nemotron-3.5-asr-streaming-0.6b-Q5_K_M.gguf from "
+                        + "huggingface.co/handy-computer/nemotron-3.5-asr-streaming-0.6b-gguf "
+                        + "and put it there, then retry."
+                )
+            }
+
+            let task = Task<Model, Error> {
+                Log.speech.info("loading Nemotron model…")
+                let model = try Model(path: path)
+                Log.speech.info("Nemotron model ready (backend: \(model.backend, privacy: .public))")
+                return model
+            }
+            state = .loading(task)
+            do {
+                let model = try await task.value
+                promote(model)
+                return model
+            } catch {
+                // Back to .unloaded, or a failed load poisons the cache: every later
+                // acquire() would re-throw this stale error instead of retrying.
+                if case .loading(let t) = state, t == task { state = .unloaded }
+                throw error
+            }
+        }
+    }
+
+    /// The one place a resolved load task turns into cache state. Every acquirer
+    /// awaiting the same task runs this after it resumes; only the first still sees
+    /// `.loading`. `.unloaded` means `unloadNow()` won the race — the caller keeps
+    /// the model alive via its own `Session` and its later `release()` is a no-op.
+    private func promote(_ model: Model) {
+        switch state {
+        case .loading:
+            state = .ready(model: model, refcount: 1)
+        case .ready(_, let refcount):
+            state = .ready(model: model, refcount: refcount + 1)
+        case .unloaded:
+            break
+        }
+    }
+
+    /// Drops one refcount. At zero the model stays warm until the idle timer fires
+    /// without a new `acquire()` cancelling it first.
+    func release() {
+        guard case .ready(let model, let refcount) = state else { return }
+        state = .ready(model: model, refcount: max(refcount - 1, 0))
+        guard refcount <= 1 else { return }
+        idleTask = Task {
             try? await Task.sleep(for: Self.idleUnloadDelay)
             guard !Task.isCancelled else { return }
-            loaded = nil
+            guard case .ready(_, 0) = state else { return }
+            state = .unloaded
             Log.speech.info("Nemotron model idle — released")
         }
     }
 
     /// Frees the model right now, bypassing the idle timer. Used at app quit: the model
     /// must be gone *before* `exit()` runs, not 60 seconds after the process is dead.
-    func forceUnload() {
-        idleUnloadTask?.cancel()
-        idleUnloadTask = nil
-        loaded = nil
+    func unloadNow() {
+        idleTask?.cancel()
+        idleTask = nil
+        if case .loading(let task) = state { task.cancel() }
+        state = .unloaded
     }
 }
