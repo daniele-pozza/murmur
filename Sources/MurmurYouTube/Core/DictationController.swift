@@ -27,6 +27,18 @@ final class DictationController {
     /// Smoothed 0…1 mic level for the waveform.
     private(set) var level: Float = 0
 
+    /// Why a dictation session is being torn down; picks await-vs-cancel behavior.
+    private enum TeardownReason {
+        /// Key released — drain and finalize the utterance.
+        case normal
+        /// Abort (device change, deactivate) — cancel tasks, fire-and-forget `finish()`.
+        case cancelled
+        /// Start-up error — same as cancelled, ending in an error state.
+        case failed
+        /// App quit — cancel, await everything, full engine shutdown.
+        case quit
+    }
+
     private let hotkey = HotkeyMonitor()
     private let capture = AudioCapture()
     private let makeEngine: @Sendable () -> any TranscriptionEngine
@@ -73,17 +85,7 @@ final class DictationController {
     /// Metal device it doesn't expect to still be resident.
     func shutdown() async {
         hotkey.stop()
-        capture.stop()
-        audioContinuation?.finish()
-        audioContinuation = nil
-        feedTask?.cancel()
-        await feedTask?.value
-        feedTask = nil
-        consumeTask?.cancel()
-        await consumeTask?.value
-        consumeTask = nil
-        await engine?.shutdown()
-        engine = nil
+        await teardown(reason: .quit)
         // Covers the common case too: no active dictation, but the model is still warm
         // in the cache from an earlier one, with no live `engine` to call shutdown() on.
         await NemotronEngine.shutdownModel()
@@ -135,7 +137,7 @@ final class DictationController {
         Task { @MainActor in
             do {
                 guard await Permissions.requestMicrophone() else {
-                    fail("Microphone access is off. Enable it in System Settings ▸ Privacy & Security ▸ Microphone.")
+                    await fail("Microphone access is off. Enable it in System Settings ▸ Privacy & Security ▸ Microphone.")
                     return
                 }
 
@@ -176,7 +178,8 @@ final class DictationController {
 
                 // Bail out if the user already let go while we were spinning up.
                 guard case .starting = self.state else {
-                    await self.teardown()
+                    await self.teardown(reason: .normal)
+                    self.state = .idle
                     return
                 }
 
@@ -189,11 +192,11 @@ final class DictationController {
                             self.transcript = chunk.text
                         }
                     } catch {
-                        self.fail(error.localizedDescription)
+                        await self.fail(error.localizedDescription)
                     }
                 }
             } catch {
-                self.fail(error.localizedDescription)
+                await self.fail(error.localizedDescription)
             }
         }
     }
@@ -205,22 +208,10 @@ final class DictationController {
         // so the window is wide.
         guard state.isActive, state != .finishing else { return }
         state = .finishing
-        capture.stop()
-        level = 0
         releasedAt = Date()
 
         Task { @MainActor in
-            // Drain every captured buffer into the engine before asking it to finalize,
-            // or the tail of the utterance gets dropped.
-            audioContinuation?.finish()
-            audioContinuation = nil
-            await feedTask?.value
-            feedTask = nil
-
-            await engine?.finish()
-            await consumeTask?.value
-            consumeTask = nil
-            engine = nil
+            await teardown(reason: .normal)
 
             let raw = transcript
             guard !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -252,34 +243,53 @@ final class DictationController {
     }
 
     private func cancelDictation() {
-        capture.stop()
-        audioContinuation?.finish()
-        audioContinuation = nil
-        feedTask?.cancel()
-        feedTask = nil
-        consumeTask?.cancel()
-        consumeTask = nil
-
-        let engine = self.engine
-        self.engine = nil
-        Task { await engine?.finish() }
-
+        Task { await self.teardown(reason: .cancelled) }
         state = .idle
         transcript = ""
-        level = 0
     }
 
-    private func teardown() async {
+    /// Single teardown sequence for every way a dictation session ends. Stops capture,
+    /// closes the audio stream, and releases the tasks and engine. The reason picks
+    /// await-vs-cancel behavior; callers set their own end `state`.
+    private func teardown(reason: TeardownReason) async {
         capture.stop()
         audioContinuation?.finish()
         audioContinuation = nil
-        await feedTask?.value
-        feedTask = nil
-        await engine?.finish()
-        engine = nil
-        consumeTask?.cancel()
-        consumeTask = nil
-        state = .idle
+
+        switch reason {
+        case .normal:
+            // Drain every captured buffer into the engine before asking it to finalize,
+            // or the tail of the utterance gets dropped. Nothing is cancelled: the feed
+            // loop ends on its own once the stream is finished.
+            await feedTask?.value
+            feedTask = nil
+            await engine?.finish()
+            engine = nil
+            await consumeTask?.value
+            consumeTask = nil
+        case .cancelled, .failed:
+            feedTask?.cancel()
+            feedTask = nil
+            consumeTask?.cancel()
+            consumeTask = nil
+            // The engine's `finish()` arms the idle-unload timer — dropping the reference
+            // without it would leave the model resident. Fired without waiting: these
+            // paths must stay cheap and are reachable from synchronous contexts.
+            let engine = self.engine
+            self.engine = nil
+            Task { await engine?.finish() }
+        case .quit:
+            feedTask?.cancel()
+            await feedTask?.value
+            feedTask = nil
+            consumeTask?.cancel()
+            await consumeTask?.value
+            consumeTask = nil
+            await engine?.shutdown()
+            engine = nil
+        }
+
+        level = 0
     }
 
     // MARK: - Helpers
@@ -308,27 +318,12 @@ final class DictationController {
         level += (new - level) * 0.35
     }
 
-    private func fail(_ message: String) {
+    private func fail(_ message: String) async {
         Log.app.error("\(message)")
-        capture.stop()
-        audioContinuation?.finish()
-        audioContinuation = nil
-        feedTask?.cancel()
-        feedTask = nil
-
-        // Same as `cancelDictation`: the engine's `finish()` arms the idle-unload timer.
-        // Dropping the reference without it would leave the model resident — `fail()` runs
-        // after the model has loaded, so this is the one path that must not leak 716MB.
-        let engine = self.engine
-        self.engine = nil
-        Task { await engine?.finish() }
-
-        consumeTask?.cancel()
-        consumeTask = nil
+        await teardown(reason: .failed)
         state = .error(message)
-        level = 0
 
-        Task { @MainActor in
+        Task {
             try? await Task.sleep(for: .seconds(3))
             if case .error = state { state = .idle }
         }
