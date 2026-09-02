@@ -8,7 +8,10 @@ import SwiftUI
 /// nothing to insert into. Hence `.nonactivatingPanel` plus `canBecomeKey == false`.
 @MainActor
 final class HUDPanel: NSPanel {
+    private let controller: DictationController
+
     init(controller: DictationController) {
+        self.controller = controller
         super.init(
             contentRect: NSRect(origin: .zero, size: HUDLayout.panelSize),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -28,6 +31,7 @@ final class HUDPanel: NSPanel {
         hasShadow = false
 
         contentView = NSHostingView(rootView: HUDView(controller: controller))
+        startSelfHealSync()
     }
 
     override var canBecomeKey: Bool { false }
@@ -66,7 +70,7 @@ final class HUDPanel: NSPanel {
     private var generation = 0
 
     /// Shows the pill, or re-asserts it if it should already be up. Idempotent: called on
-    /// every state change *and* twice a second by `AppDelegate`'s sync timer.
+    /// every state change *and* twice a second by the self-heal sync timer above.
     ///
     /// Deliberately not animated. A fade-in reads nicer, but it makes "the pill is on
     /// screen" the *outcome of an animation* — one that AppKit can supersede or drop
@@ -116,6 +120,32 @@ final class HUDPanel: NSPanel {
         guard let onScreen = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID)
             as? [[String: Any]] else { return false }
         return onScreen.contains { $0[kCGWindowNumber as String] as? Int == windowNumber }
+    }
+
+    /// Keeps the pill in step with `controller.state` — and heals it when something
+    /// else knocked it out of step.
+    ///
+    /// State changes already drive `present()`/`dismiss()` (via the controller's
+    /// observation), but the window server can drop a borderless panel with no state
+    /// change at all to react to (see commit 667e4e4) — the pill goes missing for a
+    /// whole utterance while dictation runs fine underneath. Polling makes the pill a
+    /// function of the current state instead of the result of an unbroken event chain,
+    /// so whatever went wrong heals within half a second. `.common` mode: a
+    /// default-mode timer stalls while a menu is open or a window is being dragged.
+    /// `present()`/`dismiss()` are both idempotent, hence no extra guards.
+    private func startSelfHealSync() {
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                if self.controller.state.isActive {
+                    self.present()
+                } else if self.isVisible {
+                    self.dismiss()
+                }
+            }
+        }
+        timer.tolerance = 0.2
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     func dismiss() {
