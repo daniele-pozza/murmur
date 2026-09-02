@@ -34,9 +34,16 @@ actor NemotronEngine: TranscriptionEngine {
 
     func start() async throws -> AsyncThrowingStream<TranscriptionChunk, Error> {
         let model = try await NemotronModelCache.shared.acquire(path: Self.modelPath)
-        let session = try model.session()
-        let stream = try session.stream()
-        self.stream = stream
+        do {
+            let session = try model.session()
+            let stream = try session.stream()
+            self.stream = stream
+        } catch {
+            // Don't leak the acquired refcount — the cache would hold the model warm
+            // forever (nobody else will release it for us).
+            await NemotronModelCache.shared.release()
+            throw error
+        }
 
         let (asyncStream, continuation) = AsyncThrowingStream<TranscriptionChunk, Error>.makeStream()
         self.continuation = continuation
@@ -165,9 +172,16 @@ private actor NemotronModelCache {
                 return model
             }
             state = .loading(task)
-            let model = try await task.value
-            promote(model)
-            return model
+            do {
+                let model = try await task.value
+                promote(model)
+                return model
+            } catch {
+                // Back to .unloaded, or a failed load poisons the cache: every later
+                // acquire() would re-throw this stale error instead of retrying.
+                if case .loading(let t) = state, t == task { state = .unloaded }
+                throw error
+            }
         }
     }
 
