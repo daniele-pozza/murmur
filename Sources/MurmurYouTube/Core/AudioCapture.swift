@@ -7,6 +7,169 @@ import Foundation
 /// The tap runs on a real-time audio thread, so everything it touches lives behind
 /// `nonisolated(unsafe)` and is only ever mutated from that one thread.
 ///
+/// Thin adapter over `AudioDeviceSession`: this type installs the tap, converts buffers,
+/// and reports levels; all Core Audio engine-nursing workarounds (fresh engine per session,
+/// off-thread retirement, sample-rate restore, HAL settle retries) live in the session.
+final class AudioCapture: @unchecked Sendable {
+    private let session = AudioDeviceSession()
+
+    private nonisolated(unsafe) var converter: AVAudioConverter?
+    private nonisolated(unsafe) var outputFormat: AVAudioFormat?
+    private nonisolated(unsafe) var isRunning = false
+    private nonisolated(unsafe) var tapInstalled = false
+    private nonisolated(unsafe) var inputNode: AVAudioInputNode?
+
+    /// Called on the audio thread with each converted buffer.
+    private nonisolated(unsafe) var onBuffer: (@Sendable (AudioChunk) -> Void)?
+    /// Called on the audio thread with a 0…1 RMS level, for the HUD waveform.
+    private nonisolated(unsafe) var onLevel: (@Sendable (Float) -> Void)?
+
+    func start(
+        outputFormat: AVAudioFormat,
+        onBuffer: @escaping @Sendable (AudioChunk) -> Void,
+        onLevel: @escaping @Sendable (Float) -> Void,
+        onConfigurationChange: @escaping @Sendable () -> Void = {}
+    ) throws {
+        let nativeFormat = try session.start(onConfigurationChange: onConfigurationChange) {
+            [weak self] input, nativeFormat in
+            guard let self else { return }
+
+            self.onBuffer = onBuffer
+            self.onLevel = onLevel
+            self.outputFormat = outputFormat
+            self.inputNode = input
+
+            converter = nativeFormat == outputFormat
+                ? nil
+                : AVAudioConverter(from: nativeFormat, to: outputFormat)
+
+            input.installTap(onBus: 0, bufferSize: 2048, format: nativeFormat) { [weak self] buffer, _ in
+                self?.handle(buffer)
+            }
+            tapInstalled = true
+        }
+
+        isRunning = true
+        Log.audio.info("capture started — native \(nativeFormat.sampleRate)Hz → engine \(outputFormat.sampleRate)Hz")
+    }
+
+    func stop() {
+        guard inputNode != nil else { return }
+
+        if tapInstalled { inputNode?.removeTap(onBus: 0) }
+        session.stop()
+        inputNode = nil
+        tapInstalled = false
+        isRunning = false
+        converter = nil
+        onBuffer = nil
+        onLevel = nil
+        outputFormat = nil
+        Log.audio.info("capture stopped")
+    }
+
+    // MARK: - Audio thread
+
+    private func handle(_ buffer: AVAudioPCMBuffer) {
+        onLevel?(Self.rms(of: buffer))
+
+        guard let outputFormat else { return }
+
+        // AVAudioEngine reuses the tap's buffer as soon as this returns, so the engine
+        // must never see it directly — copy when no conversion would otherwise allocate.
+        guard let converter else {
+            if let copy = Self.copy(buffer) {
+                onBuffer?(AudioChunk(buffer: copy))
+            }
+            return
+        }
+
+        // Output frame count scales with the sample-rate ratio; round up so we never clip.
+        let ratio = outputFormat.sampleRate / buffer.format.sampleRate
+        let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up)) + 64
+        guard let converted = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else { return }
+
+        // The input block runs synchronously inside `convert`, on this thread.
+        nonisolated(unsafe) let input = buffer
+        let consumed = Latch()
+        var error: NSError?
+        let status = converter.convert(to: converted, error: &error) { _, outStatus in
+            guard !consumed.take() else {
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+            outStatus.pointee = .haveData
+            return input
+        }
+
+        if let error {
+            Log.audio.error("conversion failed: \(error.localizedDescription)")
+            return
+        }
+        guard status != .error, converted.frameLength > 0 else { return }
+        onBuffer?(AudioChunk(buffer: converted))
+    }
+
+    /// Deep-copies a tap buffer into storage we own.
+    private static func copy(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard buffer.frameLength > 0,
+              let copy = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength)
+        else { return nil }
+
+        copy.frameLength = buffer.frameLength
+        let channels = Int(buffer.format.channelCount)
+        let frames = Int(buffer.frameLength)
+
+        if let source = buffer.floatChannelData, let destination = copy.floatChannelData {
+            for channel in 0..<channels {
+                destination[channel].update(from: source[channel], count: frames)
+            }
+        } else if let source = buffer.int16ChannelData, let destination = copy.int16ChannelData {
+            for channel in 0..<channels {
+                destination[channel].update(from: source[channel], count: frames)
+            }
+        } else if let source = buffer.int32ChannelData, let destination = copy.int32ChannelData {
+            for channel in 0..<channels {
+                destination[channel].update(from: source[channel], count: frames)
+            }
+        } else {
+            return nil
+        }
+
+        return copy
+    }
+
+    /// One-shot flag. Only touched from the audio thread inside a synchronous call.
+    private final class Latch: @unchecked Sendable {
+        private var fired = false
+        /// - Returns: the value *before* this call, then latches to `true`.
+        func take() -> Bool {
+            defer { fired = true }
+            return fired
+        }
+    }
+
+    private static func rms(of buffer: AVAudioPCMBuffer) -> Float {
+        guard let channel = buffer.floatChannelData?[0] else { return 0 }
+        let count = Int(buffer.frameLength)
+        guard count > 0 else { return 0 }
+
+        var sum: Float = 0
+        for i in 0..<count {
+            let sample = channel[i]
+            sum += sample * sample
+        }
+        let rms = (sum / Float(count)).squareRoot()
+
+        // Map roughly -50…0 dBFS onto 0…1 so quiet speech still moves the meter.
+        let db = 20 * log10(max(rms, 1e-7))
+        return max(0, min(1, (db + 50) / 50))
+    }
+}
+
+/// Owns the `AVAudioEngine` lifecycle for one capture session, plus the Core Audio
+/// workarounds that keep long-running dictation reliable on macOS.
+///
 /// The engine is deliberately **not** reused across sessions. A long-lived `AVAudioEngine`
 /// accumulates Core Audio/HAL state on macOS — sample-rate drift, configuration changes,
 /// buffer underruns — that makes each successive recording worse and eventually wedges the
@@ -16,17 +179,10 @@ import Foundation
 /// recording). Because `-[AVAudioEngine dealloc]` can block on AVAudioIOUnit's internal
 /// queue, the old engine is released on a dedicated serial queue rather than the caller's
 /// thread, and `start()` drains that queue first so teardown never overlaps construction.
-final class AudioCapture: @unchecked Sendable {
+final class AudioDeviceSession: @unchecked Sendable {
     private nonisolated(unsafe) var engine: AVAudioEngine?
-    private nonisolated(unsafe) var converter: AVAudioConverter?
-    private nonisolated(unsafe) var outputFormat: AVAudioFormat?
     private nonisolated(unsafe) var isRunning = false
-    private nonisolated(unsafe) var tapInstalled = false
 
-    /// Called on the audio thread with each converted buffer.
-    private nonisolated(unsafe) var onBuffer: (@Sendable (AudioChunk) -> Void)?
-    /// Called on the audio thread with a 0…1 RMS level, for the HUD waveform.
-    private nonisolated(unsafe) var onLevel: (@Sendable (Float) -> Void)?
     /// Called when the engine's configuration changes mid-session (input device switched,
     /// sample rate changed). The controller tears the session down — capture is no longer
     /// trustworthy. Invoked on the notification's posting thread; the caller hops to its
@@ -56,22 +212,28 @@ final class AudioCapture: @unchecked Sendable {
     /// reacting to that would tear down a session that only just began listening.
     private nonisolated(unsafe) var startedAt: Date?
 
+    /// Starts a fresh engine (never reused across sessions — see the type doc).
+    ///
+    /// `installTap` runs once the input node's format is known, before the engine starts:
+    /// it receives the input node and its native format, and installs the tap there.
+    /// Returns the native input format. The configuration-change callback is invoked on
+    /// the notification's posting thread.
+    @discardableResult
     func start(
-        outputFormat: AVAudioFormat,
-        onBuffer: @escaping @Sendable (AudioChunk) -> Void,
-        onLevel: @escaping @Sendable (Float) -> Void,
-        onConfigurationChange: @escaping @Sendable () -> Void = {}
-    ) throws {
-        guard !isRunning else { return }
+        onConfigurationChange: @escaping @Sendable () -> Void,
+        installTap: (_ input: AVAudioInputNode, _ nativeFormat: AVAudioFormat) throws -> Void
+    ) throws -> AVAudioFormat {
+        guard !isRunning else {
+            // Matching the previous single-type guard; the caller never hits this.
+            guard let engine else { throw TranscriptionError.noAudioFormat }
+            return try readyInputFormat(of: engine.inputNode)
+        }
 
         // Barrier: finish releasing whatever engine the previous session retired before
         // constructing a new one, so teardown and construction never overlap on Core Audio.
         retirementQueue.sync {}
 
-        self.onBuffer = onBuffer
-        self.onLevel = onLevel
         self.onConfigurationChange = onConfigurationChange
-        self.outputFormat = outputFormat
 
         // Snapshot the device's rate before the engine touches it, so `stop()` can restore
         // it if `AVAudioEngine` reconfigures the device on start.
@@ -84,14 +246,7 @@ final class AudioCapture: @unchecked Sendable {
         let input = engine.inputNode
         let nativeFormat = try readyInputFormat(of: input)
 
-        converter = nativeFormat == outputFormat
-            ? nil
-            : AVAudioConverter(from: nativeFormat, to: outputFormat)
-
-        input.installTap(onBus: 0, bufferSize: 2048, format: nativeFormat) { [weak self] buffer, _ in
-            self?.handle(buffer)
-        }
-        tapInstalled = true
+        try installTap(input, nativeFormat)
 
         // Arm the guard window only once the engine is about to start. `readyInputFormat`
         // can block up to a second while the HAL settles after wake-from-sleep; stamping
@@ -104,7 +259,7 @@ final class AudioCapture: @unchecked Sendable {
         engine.prepare()
         try startEngine(engine)
         isRunning = true
-        Log.audio.info("capture started — native \(nativeFormat.sampleRate)Hz → engine \(outputFormat.sampleRate)Hz")
+        return nativeFormat
     }
 
     func stop() {
@@ -113,18 +268,12 @@ final class AudioCapture: @unchecked Sendable {
         removeConfigObserver()
 
         if let engine {
-            if tapInstalled { engine.inputNode.removeTap(onBus: 0) }
             engine.stop()
         }
         restoreOriginalSampleRate()
         startedAt = nil
-        tapInstalled = false
         isRunning = false
-        converter = nil
-        onBuffer = nil
-        onLevel = nil
         onConfigurationChange = nil
-        outputFormat = nil
 
         // Release the engine off this thread: `-[AVAudioEngine dealloc]` can block on
         // AVAudioIOUnit's internal queue, and `start()`/`stop()` run on the main actor.
@@ -133,7 +282,6 @@ final class AudioCapture: @unchecked Sendable {
         let token = EngineRetirementToken(engine)
         self.engine = nil
         retirementQueue.async { token.release() }
-        Log.audio.info("capture stopped")
     }
 
     // MARK: - Engine setup
@@ -256,87 +404,6 @@ final class AudioCapture: @unchecked Sendable {
         Log.audio.info("restored input sample rate to \(rate)Hz (status \(status))")
     }
 
-    // MARK: - Audio thread
-
-    private func handle(_ buffer: AVAudioPCMBuffer) {
-        onLevel?(Self.rms(of: buffer))
-
-        guard let outputFormat else { return }
-
-        // AVAudioEngine reuses the tap's buffer as soon as this returns, so the engine
-        // must never see it directly — copy when no conversion would otherwise allocate.
-        guard let converter else {
-            if let copy = Self.copy(buffer) {
-                onBuffer?(AudioChunk(buffer: copy))
-            }
-            return
-        }
-
-        // Output frame count scales with the sample-rate ratio; round up so we never clip.
-        let ratio = outputFormat.sampleRate / buffer.format.sampleRate
-        let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up)) + 64
-        guard let converted = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else { return }
-
-        // The input block runs synchronously inside `convert`, on this thread.
-        nonisolated(unsafe) let input = buffer
-        let consumed = Latch()
-        var error: NSError?
-        let status = converter.convert(to: converted, error: &error) { _, outStatus in
-            guard !consumed.take() else {
-                outStatus.pointee = .noDataNow
-                return nil
-            }
-            outStatus.pointee = .haveData
-            return input
-        }
-
-        if let error {
-            Log.audio.error("conversion failed: \(error.localizedDescription)")
-            return
-        }
-        guard status != .error, converted.frameLength > 0 else { return }
-        onBuffer?(AudioChunk(buffer: converted))
-    }
-
-    /// Deep-copies a tap buffer into storage we own.
-    private static func copy(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
-        guard buffer.frameLength > 0,
-              let copy = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength)
-        else { return nil }
-
-        copy.frameLength = buffer.frameLength
-        let channels = Int(buffer.format.channelCount)
-        let frames = Int(buffer.frameLength)
-
-        if let source = buffer.floatChannelData, let destination = copy.floatChannelData {
-            for channel in 0..<channels {
-                destination[channel].update(from: source[channel], count: frames)
-            }
-        } else if let source = buffer.int16ChannelData, let destination = copy.int16ChannelData {
-            for channel in 0..<channels {
-                destination[channel].update(from: source[channel], count: frames)
-            }
-        } else if let source = buffer.int32ChannelData, let destination = copy.int32ChannelData {
-            for channel in 0..<channels {
-                destination[channel].update(from: source[channel], count: frames)
-            }
-        } else {
-            return nil
-        }
-
-        return copy
-    }
-
-    /// One-shot flag. Only touched from the audio thread inside a synchronous call.
-    private final class Latch: @unchecked Sendable {
-        private var fired = false
-        /// - Returns: the value *before* this call, then latches to `true`.
-        func take() -> Bool {
-            defer { fired = true }
-            return fired
-        }
-    }
-
     /// Owns the final strong reference to an `AVAudioEngine` being released off-thread.
     /// Wrapping the engine lets the retirement block capture a `Sendable` box instead of
     /// the non-Sendable `AVAudioEngine` itself.
@@ -344,22 +411,5 @@ final class AudioCapture: @unchecked Sendable {
         private var engine: AVAudioEngine?
         init(_ engine: AVAudioEngine?) { self.engine = engine }
         func release() { self.engine = nil }
-    }
-
-    private static func rms(of buffer: AVAudioPCMBuffer) -> Float {
-        guard let channel = buffer.floatChannelData?[0] else { return 0 }
-        let count = Int(buffer.frameLength)
-        guard count > 0 else { return 0 }
-
-        var sum: Float = 0
-        for i in 0..<count {
-            let sample = channel[i]
-            sum += sample * sample
-        }
-        let rms = (sum / Float(count)).squareRoot()
-
-        // Map roughly -50…0 dBFS onto 0…1 so quiet speech still moves the meter.
-        let db = 20 * log10(max(rms, 1e-7))
-        return max(0, min(1, (db + 50) / 50))
     }
 }
