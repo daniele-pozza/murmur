@@ -28,7 +28,7 @@ final class HUDPanel {
 
     private static func makePanel(controller: DictationController) -> NSPanel {
         let panel = NSPanel(
-            contentRect: NSRect(origin: .zero, size: HUDLayout.panelSize),
+            contentRect: NSRect(origin: .zero, size: HUDLayout.panelSize(for: Settings.shared.hudStyle)),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false

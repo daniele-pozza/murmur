@@ -61,11 +61,14 @@ enum HUDStyle: String, CaseIterable, Identifiable {
 enum HUDLayout {
     static let pillHeight: CGFloat = 22
     /// Fixed, independent of what's being dictated — the pill must not breathe with the
-    /// transcript (user request): text truncates from the head instead.
-    static let pillWidth: CGFloat = 150
+    /// transcript (user request): text truncates from the head instead. Wave-only gets
+    /// its own tighter width — just the wave and its padding, no dead space.
+    static func pillWidth(for style: HUDStyle) -> CGFloat {
+        style == .waveOnly ? 46 : 150
+    }
     static let glowMargin: CGFloat = 36
-    static var panelSize: CGSize {
-        CGSize(width: pillWidth + glowMargin * 2, height: pillHeight + glowMargin * 2)
+    static func panelSize(for style: HUDStyle) -> CGSize {
+        CGSize(width: pillWidth(for: style) + glowMargin * 2, height: pillHeight + glowMargin * 2)
     }
 }
 
@@ -112,7 +115,7 @@ struct HUDView: View {
             glow
             pill
         }
-        .frame(width: HUDLayout.panelSize.width, height: HUDLayout.panelSize.height)
+        .frame(width: HUDLayout.panelSize(for: style).width, height: HUDLayout.panelSize(for: style).height)
         .onChange(of: controller.level) { _, newLevel in
             if newLevel > HUDMotion.minLevel { lastLoudAt = Date() }
         }
@@ -142,7 +145,7 @@ struct HUDView: View {
                 .fill(isFinishing ? Brand.processingGradient : Brand.gradient)
                 .opacity(glowOpacity(at: t, release: release))
                 .scaleEffect(glowScale(at: t, release: release))
-                .frame(width: 110, height: 12)
+                .frame(width: HUDLayout.pillWidth(for: style) - 30, height: 12)
                 .blur(radius: 20)        }
     }
 
@@ -176,7 +179,7 @@ struct HUDView: View {
             }
         }
         .padding(.horizontal, 10)
-        .frame(width: HUDLayout.pillWidth, height: HUDLayout.pillHeight)
+        .frame(width: HUDLayout.pillWidth(for: style), height: HUDLayout.pillHeight)
         .background {
             Capsule()
                 .fill(.ultraThinMaterial)
