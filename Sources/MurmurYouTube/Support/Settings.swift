@@ -20,12 +20,18 @@ final class Settings {
         didSet { defaults.set(soundEnabled, forKey: Keys.soundEnabled) }
     }
 
+    /// Which mini-pill layout the HUD uses (wave only / last word / tail / word+timer).
+    var hudStyle: HUDStyle {
+        didSet { defaults.set(hudStyle.rawValue, forKey: Keys.hudStyle) }
+    }
+
     private let defaults = UserDefaults.standard
 
     private enum Keys {
         static let pushToTalkKey = "pushToTalkKey"
         static let cleanupEnabled = "cleanupEnabled"
         static let soundEnabled = "soundEnabled"
+        static let hudStyle = "hudStyle"
     }
 
     private init() {
@@ -33,5 +39,6 @@ final class Settings {
         pushToTalkKey = PushToTalkKey(rawValue: raw) ?? .f19
         cleanupEnabled = defaults.object(forKey: Keys.cleanupEnabled) as? Bool ?? true
         soundEnabled = defaults.object(forKey: Keys.soundEnabled) as? Bool ?? true
+        hudStyle = HUDStyle(rawValue: defaults.string(forKey: Keys.hudStyle) ?? "") ?? .wordTimer
     }
 }

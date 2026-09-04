@@ -25,3 +25,11 @@ models/
 
 # Claude Code session artifacts
 .claude/
+
+# Local exploration/research scratch — not part of the product
+design-explorations/
+research/
+mousemaster-macos.zip
+prompt-design.txt
+.worktrees/
+Tools/injecttest

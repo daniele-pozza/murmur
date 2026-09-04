@@ -42,6 +42,18 @@ struct SettingsWindow: View {
                     note("Strips fillers, fixes spacing and punctuation.")
                 }
 
+                panel(label: "HUD style") {
+                    Picker("Style", selection: $settings.hudStyle) {
+                        ForEach(HUDStyle.allCases) { style in
+                            Text(style.displayName).tag(style)
+                        }
+                    }
+                    .pickerStyle(.radioGroup)
+                    .labelsHidden()
+                    note("How much of the transcript the floating pill shows while "
+                        + "you dictate. Word + timer also shows how long you've been talking.")
+                }
+
                 Spacer()
             }
             .padding(DS.Space.panel)

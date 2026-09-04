@@ -136,6 +136,12 @@ private struct MenuContent: View {
             }
         }
 
+        Picker("HUD style", selection: $settings.hudStyle) {
+            ForEach(HUDStyle.allCases) { style in
+                Text(style.displayName).tag(style)
+            }
+        }
+
         Toggle("Clean up text", isOn: $settings.cleanupEnabled)
         Toggle("Sound", isOn: $settings.soundEnabled)
 

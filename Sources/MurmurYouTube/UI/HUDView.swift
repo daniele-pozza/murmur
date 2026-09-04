@@ -21,20 +21,51 @@ enum HUDMotion {
     /// The single owner of the sine "breathe" formula the waveform bars and the glow
     /// pulse both ride: `amplitude * (0.55 + 0.45 * sin(time * 6.0 + phase))`. Callers
     /// hand-rolled this and the constants drifted apart, which is where the sizing bugs
-    /// in 2e0ff81 / 95b3e4e / 5d5cd2e came from — change the timing here only.
+    /// in 2e0ff81 / 95b3e4e / 5d5cd6e came from — change the timing here only.
     static func breathe(time: TimeInterval, phase: Double = 0, amplitude: Double) -> Double {
         amplitude * (0.55 + 0.45 * sin(time * 6.0 + phase))
     }
 }
 
-/// Shared by `HUDView` and `HUDPanel`. The panel's window is exactly `pillSize` plus
-/// `glowMargin` on every side — sizing the window to the pill alone would clip the glow's
-/// blur at the window edge, flattening it into a hard-edged square instead of a halo.
+/// How much of the transcript lives next to the wave in the mini-pill. Explored in
+/// design-explorations/hud-pill-c4-text-experiments.html; user-pickable so the tradeoff
+/// (feedback vs. quiet) is a runtime choice, not a build-time one.
+enum HUDStyle: String, CaseIterable, Identifiable {
+    /// C4 — just the wave, nothing else. Quietest.
+    case waveOnly
+    /// D1 — wave + the most recently recognized word.
+    case lastWord
+    /// D2 — wave + the last few words, pill stretches with them.
+    case tail
+    /// D4 — wave + last word + elapsed timer. The default.
+    case wordTimer
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .waveOnly: "Wave only"
+        case .lastWord: "Last word"
+        case .tail: "Tail of phrase"
+        case .wordTimer: "Word + timer"
+        }
+    }
+}
+
+/// Shared by `HUDView` and `HUDPanel`. The panel's window is the pill plus `glowMargin`
+/// on every side — sizing the window to the pill alone would clip the glow's blur at the
+/// window edge, flattening it into a hard-edged square instead of a halo. The width is
+/// fixed at the widest the pill can get (tail with `tailWordCount` words) rather than
+/// resized live — the pill is centered in the window, so stretching stays a pure
+/// SwiftUI-internal relayout with no window-server involvement.
 enum HUDLayout {
-    static let pillSize = CGSize(width: 200, height: 42)
-    static let glowMargin: CGFloat = 50
+    static let pillHeight: CGFloat = 22
+    /// Fixed, independent of what's being dictated — the pill must not breathe with the
+    /// transcript (user request): text truncates from the head instead.
+    static let pillWidth: CGFloat = 150
+    static let glowMargin: CGFloat = 36
     static var panelSize: CGSize {
-        CGSize(width: pillSize.width + glowMargin * 2, height: pillSize.height + glowMargin * 2)
+        CGSize(width: pillWidth + glowMargin * 2, height: pillHeight + glowMargin * 2)
     }
 }
 
@@ -67,10 +98,14 @@ enum Brand {
 
 struct HUDView: View {
     @Bindable var controller: DictationController
+    var style: HUDStyle { Settings.shared.hudStyle }
 
     /// Last moment `controller.level` crossed `HUDMotion.minLevel`. Read against
     /// `HUDMotion.speakingHold` to smooth over the natural gaps between words.
     @State private var lastLoudAt: Date = .distantPast
+    /// When the current session's clock starts — `.starting`, since that's the moment
+    /// the pill appears and the user starts waiting.
+    @State private var startedAt: Date?
 
     var body: some View {
         ZStack {
@@ -81,13 +116,14 @@ struct HUDView: View {
         .onChange(of: controller.level) { _, newLevel in
             if newLevel > HUDMotion.minLevel { lastLoudAt = Date() }
         }
+        .onChange(of: controller.state.isActive) { _, active in
+            startedAt = active ? Date() : nil
+        }
     }
 
     // A separate, larger rounded shape blurred behind the pill — not a `.shadow` on the
-    // pill itself. `.shadow` would silhouette the *pill's* corner radius correctly too, but
-    // the panel window only has room for the blur because of the margin below; keeping the
-    // glow as its own shape here makes the halo's reach (and its own corner radius) tunable
-    // independently of the pill.
+    // pill itself. Keeping the glow as its own shape makes the halo's reach (and its own
+    // corner radius) tunable independently of the pill.
     //
     // Driven by the same sine-on-level formula as the waveform bars (phase 0, no per-bar
     // offset) so the halo breathes in step with the wave instead of sitting at a flat
@@ -102,51 +138,110 @@ struct HUDView: View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !controller.state.isActive)) { timeline in
             let t = timeline.date.timeIntervalSinceReferenceDate
             let release = glowRelease(at: timeline.date)
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(isFinishing ? Brand.processingGradient : Brand.gradient)
                 .opacity(glowOpacity(at: t, release: release))
                 .scaleEffect(glowScale(at: t, release: release))
-                .frame(width: HUDLayout.pillSize.width - 10, height: HUDLayout.pillSize.height - 10)
-                .blur(radius: 28)
-        }
+                .frame(width: 110, height: 12)
+                .blur(radius: 20)        }
     }
 
     private var pill: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 5) {
             Waveform(
                 level: controller.level,
                 isActive: isSpeaking,
                 isListening: controller.state.isActive,
-                gradient: isFinishing ? Brand.processingGradient : Brand.gradient
+                gradient: isFinishing ? Brand.processingGradient : Brand.gradient,
+                barCount: 5,
+                maxBarHeight: 12
             )
-            .frame(width: 19, height: 8)
-            // Centered in its own quarter of the pill's content width (180pt / 4 = 45pt),
-            // not stretched to fill it.
-            .frame(width: 45)
-            // Fixed-size sibling in a tight HStack — without priority, a long
-            // unbreakable run of text can still squeeze this narrower than its frame.
+            .frame(width: 23, height: 12)
             .layoutPriority(1)
 
-            Text(label)
-                .font(.system(size: 10, weight: .medium, design: .rounded))
-                .foregroundStyle(isError ? Color.red.opacity(0.9) : .primary.opacity(0.85))
-                .lineLimit(2)
+            text
+                .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                .foregroundStyle(isFinishing ? Brand.processing.opacity(0.95) : Color.primary.opacity(0.9))
+                .lineLimit(1)
                 .truncationMode(.head)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .animation(.easeOut(duration: 0.12), value: controller.transcript)
+                // Fills the space between the pinned wave and the pinned timer — the text
+                // reflows here instead of pushing the siblings around. With nothing to
+                // show (wave-only, or word+timer before the first word) it still occupies
+                // the space so the wave stays glued to the left edge and the timer to the
+                // right, from the very first frame.
+                .frame(maxWidth: .infinity)
+
+            if showsTimer {
+                timer
+            }
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .frame(width: HUDLayout.pillSize.width, height: HUDLayout.pillSize.height)
+        .frame(width: HUDLayout.pillWidth, height: HUDLayout.pillHeight)
         .background {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            Capsule()
                 .fill(.ultraThinMaterial)
                 .overlay {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .strokeBorder(.white.opacity(0.12), lineWidth: 1)
+                    Capsule().strokeBorder(.white.opacity(0.2), lineWidth: 1)
                 }
-                .shadow(color: .black.opacity(0.28), radius: 18, y: 8)
+                .shadow(color: .black.opacity(0.35), radius: 12, y: 4)
         }
+    }
+
+    // MARK: - Style-dependent content
+
+    private var showsTimer: Bool { style == .wordTimer }
+
+    /// What the text slot holds, per style. `.starting`/`.finishing` override the
+    /// transcript-derived content — those states have their own story to tell.
+    private var text: Text? {
+        switch controller.state {
+        case .starting:
+            return Text("Loading…")
+        case .finishing:
+            return Text("Transcribing…")
+        case .listening:
+            let words = controller.transcript
+                .split(whereSeparator: \.isWhitespace)
+            switch style {
+            case .waveOnly:
+                return nil
+            case .lastWord:
+                guard let last = words.last else { return Text("Listening…") }
+                return Text(last)
+            case .tail, .wordTimer:
+                // Full transcript, truncated from the head by SwiftUI's own ellipsis —
+                // with a fixed pill width that's exactly the "tail of phrase" effect,
+                // and it cuts on rendered width rather than a word count.
+                return controller.transcript.isEmpty
+                    ? (style == .wordTimer ? nil : Text("Listening…"))
+                    : Text(controller.transcript)
+            }
+        case .error, .idle:
+            return nil
+        }
+    }
+
+    /// Elapsed `m:ss`, ticking on the same `TimelineView` clock the wave rides so the
+    /// digits and the bars share one timer (no second 30fps source).
+    private var timer: some View {
+        TimelineView(.periodic(from: .now, by: 1.0)) { timeline in
+            let elapsed = startedAt.map { timeline.date.timeIntervalSince($0) } ?? 0
+            HStack(spacing: 5) {
+                Rectangle()
+                    .fill(.primary.opacity(0.18))
+                    .frame(width: 1, height: 10)
+                Text(Self.counterText(elapsed))
+                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.primary.opacity(0.55))
+                    .monospacedDigit()
+            }
+            .fixedSize()
+        }
+    }
+
+    static func counterText(_ elapsed: TimeInterval) -> String {
+        let total = Int(elapsed)
+        return String(format: "%d:%02d", total / 60, total % 60)
     }
 
     private var isFinishing: Bool {
@@ -185,27 +280,6 @@ struct HUDView: View {
     private func glowScale(at time: TimeInterval, release: Double) -> CGFloat {
         1.0 + glowPulse(at: time, release: release) * 0.12
     }
-
-    private var isError: Bool {
-        if case .error = controller.state { return true }
-        return false
-    }
-
-    private var label: String {
-        switch controller.state {
-        // `.starting` spans the mic-permission check and the model load, and capture
-        // hasn't begun yet — so this is the honest place for "loading", and it clears
-        // itself the moment the state advances. Usually a ~0.7s flash off a warm model;
-        // the ~25s cold load after a reboot is the case it's actually there for.
-        case .starting: "Loading speech model…"
-        case .listening: controller.transcript.isEmpty ? "Listening…" : controller.transcript
-        // Nothing more streams in after the final chunk lands, so say what's happening
-        // rather than leaving an empty pill while the formatter runs.
-        case .finishing: controller.transcript.isEmpty ? "Transcribing…" : controller.transcript
-        case .error(let message): message
-        case .idle: ""
-        }
-    }
 }
 
 /// Level-reactive bars. Each bar gets a fixed phase offset so the group ripples rather
@@ -220,22 +294,23 @@ private struct Waveform: View {
     /// on a repeated value with no `Observable` change to trigger a re-render.
     let isListening: Bool
     var gradient: LinearGradient = Brand.gradient
+    var barCount = 9
+    var maxBarHeight: CGFloat = 22
 
-    // 9 bars * 3pt + 8 gaps * 2pt = 43pt — fits inside the 45pt slot HUDView gives this
-    // view. The old 12-bar / 3pt-gap combination summed to 69pt and spilled past both
-    // edges of that slot, since a fixed `.frame` doesn't clip a wider HStack by default.
-    private static let barCount = 9
-    private static let barSpacing: CGFloat = 2
-    private static let phases: [Double] = (0..<barCount).map { index in
+    private var barSpacing: CGFloat { barCount > 6 ? 2 : 3 }
+
+    private var phases: [Double] {
         // Irrational multiplier keeps the offsets from lining up into a visible period.
-        (Double(index) * 0.618).truncatingRemainder(dividingBy: 1)
+        (0..<barCount).map { index in
+            (Double(index) * 0.618).truncatingRemainder(dividingBy: 1)
+        }
     }
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !isListening)) { timeline in
             let t = timeline.date.timeIntervalSinceReferenceDate
-            HStack(alignment: .center, spacing: Self.barSpacing) {
-                ForEach(0..<Self.barCount, id: \.self) { index in
+            HStack(alignment: .center, spacing: barSpacing) {
+                ForEach(0..<barCount, id: \.self) { index in
                     Capsule()
                         .fill(gradient)
                         .frame(width: 3, height: height(for: index, at: t))
@@ -250,11 +325,10 @@ private struct Waveform: View {
         let floorHeight: CGFloat = 2
         guard isActive else { return floorHeight }
 
-        let phase = Self.phases[index] * .pi * 2
+        let phase = phases[index] * .pi * 2
         let amplitude = Double(max(HUDMotion.minLevel, level))
         // Wave rides on top of the level so bars still breathe during quiet passages.
         let scaled = CGFloat(HUDMotion.breathe(time: time, phase: phase, amplitude: amplitude))
-        // Half of the pre-halving peak (23), matching the bars' halved frame.
-        return floorHeight + max(0, scaled) * 11
+        return floorHeight + max(0, scaled) * (maxBarHeight - floorHeight)
     }
 }
