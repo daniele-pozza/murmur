@@ -114,5 +114,16 @@ install: app
 	@open "/Applications/$(APPNAME)"
 	@echo "installed to /Applications/$(APPNAME)"
 
+MODEL_DIR	:= $(HOME)/Library/Application Support/MurmurYouTube
+MODEL_FILE	:= nemotron-3.5-asr-streaming-0.6b-Q5_K_M.gguf
+MODEL_URL	:= https://huggingface.co/handy-computer/nemotron-3.5-asr-streaming-0.6b-gguf/resolve/main/$(MODEL_FILE)
+
+## One-shot model fetch (~700 MB). Skips if already present; resumes partial downloads.
+download-model:
+	@if [ -f "$(MODEL_DIR)/$(MODEL_FILE)" ]; then echo "model already present: $(MODEL_DIR)/$(MODEL_FILE)"; \
+	else mkdir -p "$(MODEL_DIR)" && curl -L -C - --fail -o "$(MODEL_DIR)/$(MODEL_FILE).part" "$(MODEL_URL)" \
+	&& mv "$(MODEL_DIR)/$(MODEL_FILE).part" "$(MODEL_DIR)/$(MODEL_FILE)" \
+	&& echo "model installed: $(MODEL_DIR)/$(MODEL_FILE)"; fi
+
 clean:
 	@rm -rf .build "$(STAGE)" "$(SCRATCH)"

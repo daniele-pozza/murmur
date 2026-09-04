@@ -10,6 +10,9 @@ Press-to-toggle dictation: press a key, talk, press again, cleaned-up text is ty
 whatever had focus. macOS only, Swift 6, SwiftUI. One transcription engine
 (`NemotronEngine`, Nemotron 3.5 ASR streaming 0.6B Q5_K_M via transcribe.cpp on ggml/Metal).
 One text formatter (`RuleBasedFormatter`, deterministic cleanup — no LLM tier).
+Published at https://github.com/daniele-pozza/murmur (private, for the team);
+AGENT_SETUP.md is the agent-facing install guide — keep it in sync when install
+steps or defaults change.
 
 Cut relative to upstream: the Windows/C# app, the dictionary/correction feature, the
 engine-comparison window and dashboard, Parakeet and Apple `SpeechAnalyzer` engines, the
@@ -20,10 +23,18 @@ these speculatively — see the README's "Not built yet" for what's actually pla
 
 ## Working here
 
-- `swift build` from repo root; `make app` / `make install` for a signed bundle.
+- `swift build` from repo root; `make app` / `make install` for a signed bundle;
+  `make download-model` fetches the gguf into ~/Library/Application Support/MurmurYouTube
+  (skips if present, resumes partial downloads).
 - The hotkey is a *toggle*, not push-to-talk — `DictationController.toggleDictation()`
-  flips idle↔recording on every press of the configured key. `HotkeyMonitor` only reports
-  raw press/release transitions; the toggle logic lives in the controller, not the monitor.
+  flips idle↔recording on every press of the configured key (default Right ⌥).
+  `HotkeyMonitor` only reports raw press/release transitions; the toggle logic lives in
+  the controller, not the monitor.
+- The HUD is a compact glass pill whose content depends on `Settings.hudStyle`
+  (`HUDStyle`: waveOnly / lastWord / tail / wordTimer). Pill width is fixed per style
+  (`HUDLayout.pillWidth(for:)`) and must stay independent of the transcript — text
+  truncates from the head inside a `maxWidth: .infinity` slot between the pinned wave
+  (left) and pinned timer (right). Don't reintroduce width-that-grows-with-text.
 - `TranscriptionEngine` and `TextFormatter` are still protocols (single implementation
   each) — keep using them as the seam if you swap either out, don't inline.
 - The ggml model isn't `Sendable`; it's confined to the private `NemotronModelCache` actor

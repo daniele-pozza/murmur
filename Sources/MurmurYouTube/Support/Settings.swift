@@ -35,8 +35,8 @@ final class Settings {
     }
 
     private init() {
-        let raw = defaults.string(forKey: Keys.pushToTalkKey) ?? PushToTalkKey.f19.rawValue
-        pushToTalkKey = PushToTalkKey(rawValue: raw) ?? .f19
+        let raw = defaults.string(forKey: Keys.pushToTalkKey) ?? PushToTalkKey.rightOption.rawValue
+        pushToTalkKey = PushToTalkKey(rawValue: raw) ?? .rightOption
         cleanupEnabled = defaults.object(forKey: Keys.cleanupEnabled) as? Bool ?? true
         soundEnabled = defaults.object(forKey: Keys.soundEnabled) as? Bool ?? true
         hudStyle = HUDStyle(rawValue: defaults.string(forKey: Keys.hudStyle) ?? "") ?? .wordTimer

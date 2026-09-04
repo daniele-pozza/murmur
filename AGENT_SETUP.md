@@ -26,23 +26,21 @@ Il clone scarica da solo la dipendenza binaria (transcribe.cpp via SwiftPM) al p
 ## Modello (fallo tu, non l'utente)
 
 L'engine è Nemotron 3.5 ASR streaming 0.6B (Q5_K_M, gguf, via transcribe.cpp su
-ggml/Metal). L'app **non** lo scarica: mettilo tu, prima del primo uso:
+ggml/Metal). L'app **non** lo scarica: c'è un target del Makefile dedicato.
 
 ```bash
-mkdir -p ~/Library/"Application Support"/MurmurYouTube
-curl -L -o ~/Library/"Application Support"/MurmurYouTube/nemotron-3.5-asr-streaming-0.6b-Q5_K_M.gguf \
-  https://huggingface.co/handy-computer/nemotron-3.5-asr-streaming-0.6b-gguf/resolve/main/nemotron-3.5-asr-streaming-0.6b-Q5_K_M.gguf
+make download-model   # ~700 MB, salta se già presente, riprende se interrotto
 ```
 
-Verifica: `ls -la` del file — deve essere ~700 MB. Se il download è interrotto,
-riprendilo con `curl -C -` (stesso comando). Senza questo file la prima dettatura
-fallisce con "Nemotron GGUF not found".
+Verifica: `ls -la ~/Library/"Application Support"/MurmurYouTube/` — il file
+`nemotron-3.5-asr-streaming-0.6b-Q5_K_M.gguf` deve essere ~530 MB. Senza questo
+file la prima dettatura fallisce con "Nemotron GGUF not found".
 
 ## Impostazioni
 
 I default sono già quelli giusti — **non toccare nulla**:
 
-- Hotkey: `F19` (toggle: premi per iniziare, premi per fermare)
+- Hotkey: `Right ⌥` (toggle: premi per iniziare, premi per fermare)
 - Clean up text: ON (strippa filler, fix punteggiatura e spazi)
 - Sound: ON (tick a inizio/fine)
 - HUD style: "Word + timer" (pillola compatta fissa: wave + ultime parole + timer)
@@ -57,7 +55,7 @@ Se l'utente vuole un altro stile HUD o un altro tasto: menu bar (icona waveform)
 2. Il primo use dopo un riavvio carica il modello a freddo: la pillola mostra
    "Loading…" per ~25 s. È normale; poi il modello sta caldo 20 s tra una
    dettatura e l'altra.
-3. Test: metti il focus in un campo di testo, premi F19, parla, premi F19. Il testo
+3. Test: metti il focus in un campo di testo, premi Right ⌥, parla, premi di nuovo. Il testo
    pulito appare dove era il cursore. La cronologia è nella finestra principale
    (menu bar ▸ Open Murmur…).
 
