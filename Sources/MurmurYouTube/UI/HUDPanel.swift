@@ -61,12 +61,12 @@ final class HUDPanel {
         let visible = screen.visibleFrame
         let size = panel.frame.size
         // The window is `glowMargin` bigger than the pill on every side so the glow has
-        // room to blur into — offset by that margin so the *pill*, not the window, still
-        // sits 40pt above the Dock.
+        // room to blur into — offset by that margin so the *pill* still sits just above
+        // the Dock (and the notch-less bottom edge of `visibleFrame`).
         panel.setFrameOrigin(
             NSPoint(
                 x: visible.midX - size.width / 2,
-                y: visible.minY + 40 - HUDLayout.glowMargin
+                y: visible.minY + 10 - HUDLayout.glowMargin
             )
         )
     }

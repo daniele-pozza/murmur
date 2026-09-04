@@ -118,11 +118,15 @@ MODEL_DIR	:= $(HOME)/Library/Application Support/MurmurYouTube
 MODEL_FILE	:= nemotron-3.5-asr-streaming-0.6b-Q5_K_M.gguf
 MODEL_URL	:= https://huggingface.co/handy-computer/nemotron-3.5-asr-streaming-0.6b-gguf/resolve/main/$(MODEL_FILE)
 
-## One-shot model fetch (~700 MB). Skips if already present; resumes partial downloads.
+MODEL_SHA	:= 86429e8c4f7fdcf9b3312269ad1ca6669478ba7805331c4aea7a2e33e9910d65
+
+## One-shot model fetch (~530 MB). Skips if already present (by sha, not just name);
+## resumes partial downloads; verifies against the sha of the model we run in prod.
 download-model:
-	@if [ -f "$(MODEL_DIR)/$(MODEL_FILE)" ]; then echo "model already present: $(MODEL_DIR)/$(MODEL_FILE)"; \
+	@if [ -f "$(MODEL_DIR)/$(MODEL_FILE)" ] && echo "$(MODEL_SHA)  $(MODEL_DIR)/$(MODEL_FILE)" | shasum -a 256 -c - >/dev/null 2>&1; then echo "model already present: $(MODEL_DIR)/$(MODEL_FILE)"; \
 	else mkdir -p "$(MODEL_DIR)" && curl -L -C - --fail -o "$(MODEL_DIR)/$(MODEL_FILE).part" "$(MODEL_URL)" \
 	&& mv "$(MODEL_DIR)/$(MODEL_FILE).part" "$(MODEL_DIR)/$(MODEL_FILE)" \
+	&& echo "$(MODEL_SHA)  $(MODEL_DIR)/$(MODEL_FILE)" | shasum -a 256 -c - \
 	&& echo "model installed: $(MODEL_DIR)/$(MODEL_FILE)"; fi
 
 clean:
